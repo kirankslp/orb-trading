@@ -1,0 +1,105 @@
+name: ORB daily plan
+
+# GitHub-hosted runners have open internet, which the Claude cloud environment
+# does not, so the data fetch lives here.
+#
+# TIMING CAVEAT: scheduled workflows are queued, not guaranteed. Under load
+# GitHub can start a cron job 5-20 minutes late. The post-range run is
+# time-critical (levels are only useful before price leaves the range), so treat
+# this as a convenience copy and run daily_plan.py from local cron if you are
+# trading it for real.
+
+on:
+  schedule:
+    - cron: "45 2 * * 1-5"    # 08:15 IST, pre-open watchlist
+    - cron: "35 4 * * 1-5"    # 10:05 IST, post-range levels
+    - cron: "15 10 * * 1-5"   # 15:45 IST, post-close review
+    - cron: "30 3 * * 6"      # Sat 09:00 IST, weekly health
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which run to execute
+        required: true
+        default: plan
+        type: choice
+        options: [premarket, plan, close, health]
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install yfinance pandas numpy
+
+      - name: Verify the engine before trusting its numbers
+        run: python test_orb_backtest.py
+
+      - name: Pick mode from the cron that fired
+        id: mode
+        run: |
+          case "${{ github.event.schedule }}" in
+            "45 2 * * 1-5")  M=premarket ;;
+            "35 4 * * 1-5")  M=plan ;;
+            "15 10 * * 1-5") M=close ;;
+            "30 3 * * 6")    M=health ;;
+            *)               M="${{ inputs.mode }}" ;;
+          esac
+          echo "mode=${M:-plan}" >> "$GITHUB_OUTPUT"
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          case "${{ steps.mode.outputs.mode }}" in
+            premarket) CMD="python daily_plan.py --premarket" ;;
+            plan)      CMD="python daily_plan.py" ;;
+            *)         CMD="python orb_backtest.py" ;;
+          esac
+          echo "running: $CMD"
+          $CMD 2>&1 | tee out.txt
+
+      - name: Publish to the job summary
+        if: always()
+        run: |
+          {
+            echo "## ORB ${{ steps.mode.outputs.mode }} — $(TZ=Asia/Kolkata date '+%Y-%m-%d %H:%M IST')"
+            echo '```'
+            cat out.txt 2>/dev/null || echo "run produced no output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Durable record. A Claude Routine reads these to interpret strategy health
+      # without needing market-data access of its own.
+      - name: Commit outputs
+        if: success()
+        run: |
+          D=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          mkdir -p reports
+          for f in daily_plan.csv orb_trades.csv watchlist.csv; do
+            [ -f "$f" ] && cp "$f" "reports/${D}-${f}"
+          done
+          cp out.txt "reports/${D}-${{ steps.mode.outputs.mode }}.txt"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          git diff --cached --quiet || git commit -m "reports: ${D} ${{ steps.mode.outputs.mode }}"
+          git push
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orb-${{ steps.mode.outputs.mode }}
+          path: |
+            out.txt
+            *.csv
+          if-no-files-found: warn
