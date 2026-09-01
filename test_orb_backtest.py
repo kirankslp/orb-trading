@@ -66,8 +66,12 @@ print("5 short       :", s.iloc[0].side, s.iloc[0].reason, s.iloc[0].entry, "->"
 assert s.iloc[0].side == "SHORT"
 
 # ------------------------------------------------------------- daily picks --
-def mk_daily(vol_by_day, base=1000.0, vol_shares=5e6):
-    """Daily OHLCV where each day's range is vol_by_day[i] (as a fraction)."""
+def mk_daily(vol_by_day, base=1000.0, vol_shares=2e7):
+    """Daily OHLCV where each day's range is vol_by_day[i] (as a fraction).
+
+    Volume is set well clear of MIN_AVG_TURNOVER so these checks test the
+    ranking, not the liquidity floor, and do not break when the floor moves.
+    """
     idx = pd.bdate_range("2025-09-01", periods=len(vol_by_day))
     c = np.full(len(vol_by_day), base)
     rng = np.asarray(vol_by_day)*base

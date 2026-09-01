@@ -40,7 +40,12 @@ DEFAULT_UNIVERSE = [
 LOOKBACK_DAYS   = 30       # window for ATR / avg volume / momentum
 ATR_PERIOD      = 14
 MIN_PRICE       = 50       # skip penny stocks
-MIN_AVG_TURNOVER= 50e7     # min avg daily turnover in Rs (50 cr) -> liquidity floor
+# Liquidity floor, and the main lever on cost. At 50 cr the screener's ATR
+# weighting pulled picks into the 0.10%/0.20% slippage tiers, where friction ran
+# 0.233% round trip against a gross edge of 0.166%. A 500 cr floor keeps the
+# tradeable set in the 0.03%/0.05% tiers. It also changes WHICH symbols get
+# picked, so gross moves too; this is not a pure cost reduction.
+MIN_AVG_TURNOVER= 500e7    # min avg daily turnover in Rs (500 cr)
 TOP_N           = 10       # size of final watchlist
 CHUNK           = 100      # symbols per yfinance download call
 # ranking weights (must sum to ~1)
