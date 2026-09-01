@@ -4,3 +4,4 @@ orb_trades.csv
 watchlist.csv
 daily_plan.csv
 logs/
+sweep_cache.pkl
