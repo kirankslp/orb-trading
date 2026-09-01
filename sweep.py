@@ -32,6 +32,12 @@ CACHE = "sweep_cache.pkl"
 GRID = [(0.008, 0.004), (0.012, 0.006), (0.016, 0.008), (0.020, 0.010),
         (0.030, 0.015), (0.012, 0.008), (0.016, 0.010), (0.024, 0.012)]
 
+# --wide: does gross keep climbing, or does it flatten as everything turns into
+# a hold-to-squareoff? The answer decides whether widening is an edge or just a
+# slower way of running the clock out.
+WIDE = [(0.008, 0.004), (0.020, 0.010), (0.030, 0.015), (0.040, 0.020),
+        (0.050, 0.025), (0.060, 0.030), (0.080, 0.040)]
+
 
 def build_cache(slots):
     daily = sc.fetch_daily(sc.UNIVERSE, days=sc.LOOKBACK_DAYS + 120)
@@ -73,7 +79,7 @@ def run(cache, tgt, sl):
     ob.TARGET_PCT, ob.SL_PCT, ob.MAX_POSITIONS = tgt, sl, cache["slots"]
     tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"])
     if tr.empty:
-        return None
+        return None, None
     n = len(tr)
     daily = tr.groupby("date").pnl.sum().sort_index()
     reasons = tr.reason.value_counts()
@@ -86,31 +92,68 @@ def run(cache, tgt, sl):
         per_trade=tr.pnl.mean(), se=se,
         gross_pt=tr.gross.mean(),
         dd=(daily.cumsum() - daily.cumsum().cummax()).min(),
+        sqoff=int(reasons.get("squareoff", 0)) + int(reasons.get("eod", 0)),
         tgt_hits=int(reasons.get("target", 0)),
         stops=int(reasons.get("stoploss", 0)),
-    )
+    ), tr
+
+
+def paired(base, tr):
+    """Gross difference per trade against the baseline config.
+
+    Entries are identical across the grid (picks, opening ranges and breakout
+    detection do not depend on stop or target), so this is a paired measurement.
+    Its standard error is much smaller than the SE of either config's level,
+    which is what makes a real improvement visible in ~40 sessions.
+    """
+    k = ["date", "symbol"]
+    a, b = base.set_index(k).gross, tr.set_index(k).gross
+    common = a.index.intersection(b.index)
+    if len(common) < 2:
+        return np.nan, np.nan
+    d = b.loc[common] - a.loc[common]
+    return d.mean(), d.std(ddof=1) / np.sqrt(len(d))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--refetch", action="store_true")
     ap.add_argument("--slots", type=int, default=ob.MAX_POSITIONS)
+    ap.add_argument("--wide", action="store_true",
+                    help="push the target out until the strategy is just a hold")
     a = ap.parse_args()
 
     cache = load_cache(a.slots, a.refetch)
-    rows = [r for t, s in GRID if (r := run(cache, t, s))]
+    grid = WIDE if a.wide else GRID
+
+    rows, base = [], None
+    for t, s in grid:
+        r, tr = run(cache, t, s)
+        if not r:
+            continue
+        if base is None:
+            base = tr
+        r["dgross"], r["dse"] = paired(base, tr)
+        rows.append(r)
     d = pd.DataFrame(rows)
 
     print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | "
           f"cost model {ob.SLIPPAGE_PCT*100:.3f}%/leg slippage")
-    print("="*104)
+    print(f"vs-base columns compare against {grid[0][0]*100:.1f}%/"
+          f"{grid[0][1]*100:.2f}% on identical entries (paired)")
+    print("="*118)
     show = d.copy()
     show["net/trade"] = show.per_trade.round(1).astype(str) + " +-" + show.se.round(1).astype(str)
     show["gross/trade"] = show.gross_pt.round(1)
+    # paired t on the gross improvement: |mean| / SE above ~2 is hard to dismiss
+    show["vs base"] = show.dgross.round(1).astype(str) + " +-" + show.dse.round(1).astype(str)
+    show["t"] = (show.dgross / show.dse).round(1)
+    show["exits t/s/sq"] = (show.tgt_hits.astype(str) + "/" + show.stops.astype(str)
+                            + "/" + show.sqoff.astype(str))
     show = show[["tgt","sl","rr","n","win","gross","cost","net","gross/trade",
-                 "net/trade","dd","tgt_hits","stops"]]
+                 "net/trade","vs base","t","dd","exits t/s/sq"]]
     print(show.to_string(index=False, float_format=lambda v: f"{v:,.1f}"))
-    print("="*104)
+    print("="*118)
 
     best = d.loc[d.net.idxmax()]
     print(f"\nBest net: {best.tgt:.1f}%/{best.sl:.2f}% -> Rs {best.net:,.0f} "
@@ -128,8 +171,20 @@ def main():
                "gross edge may cover costs at the optimistic end; worth more data")
     print(f"\n  gross/trade 95% upper bound Rs {hi:.1f} vs cost/trade "
           f"Rs {cost_pt:.1f}\n  -> {verdict}")
-    print("\n~40 sessions is a small sample. Treat a single positive cell as "
-          "noise unless net/trade clears about 2 SE.")
+
+    # Probability the true gross edge clears costs, treating the estimate as
+    # normal. Blunt, but more useful than eyeballing an interval.
+    from math import erf, sqrt
+    z = (cost_pt - best.gross_pt) / best.se if best.se else float("inf")
+    p = 0.5 * (1 - erf(z / sqrt(2)))
+    print(f"  P(true gross/trade > cost/trade) ~ {p*100:.0f}%")
+
+    print(f"\nThis was the best of {len(d)} configs, so its estimate is biased "
+          "upward by\nthe selection itself. The 'vs base' column is the honest "
+          "one: it is paired,\nso it measures whether widening actually changed "
+          "anything on the same trades.")
+    print("~40 sessions is a small sample. A single positive cell is noise "
+          "unless it clears about 2 SE.")
 
 
 if __name__ == "__main__":
