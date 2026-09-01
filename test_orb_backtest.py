@@ -106,7 +106,7 @@ intraday = {"A.NS": mkday("d1", reversal), "B.NS": mkday("d1", short),
 for k in intraday:
     intraday[k] = pd.concat([intraday[k], mkday("d2", gap)], ignore_index=True)
 picks = {"d1": ["A.NS","B.NS"], "d2": ["C.NS"]}
-w = ob.backtest_watchlist(intraday, picks)
+w, unaff = ob.backtest_watchlist(intraday, picks)
 got = {(r.date, r.symbol) for r in w.itertuples()}
 print("8 watchlist run   :", sorted(got))
 assert got == {("d1","A.NS"), ("d1","B.NS"), ("d2","C.NS")}
@@ -115,5 +115,40 @@ assert "C.NS" not in set(w[w.date=="d1"].symbol), "traded a symbol not picked th
 # 9. a symbol with too little history is dropped, not silently exploded
 assert sc.metrics(calm.head(5)) is None
 print("9 short history   : dropped by MIN_BARS filter")
+
+# ----------------------------------------------------------- budget sizing --
+# 10. whole shares only, and the slot budget caps quantity
+ob.DAY_BUDGET, ob.LEVERAGE, ob.MAX_POSITIONS = 10000, 1.0, 2
+assert ob.slot_budget() == 5000
+t = ob.trade_day("d1", mkday("d1", reversal), 3, "A.NS")
+print(f"10 sizing        : Rs5000 / entry {t['entry']} -> qty {t['qty']}, "
+      f"deployed Rs{t['deployed']:.0f}")
+assert t["qty"] == int(5000 // t["entry"]) and float(t["qty"]).is_integer()
+assert t["deployed"] <= 5000
+
+# 11. a share costing more than the slot is skipped, not bought fractionally
+dear = [(o*200, h*200, l*200, c*200) for (o,h,l,c) in reversal]   # ~Rs 20,000/share
+assert ob.trade_day("d1", mkday("d1", dear), 3, "DEAR.NS") is None
+picks_dear = {"d1": ["DEAR.NS"]}
+_, unaff = ob.backtest_watchlist({"DEAR.NS": mkday("d1", dear)}, picks_dear)
+print("11 unaffordable  :", unaff)
+assert len(unaff) == 1 and unaff[0][1] == "DEAR.NS"
+
+# 12. cost model: small orders stay percentage-based, the Rs 20 cap never binds
+c_small = ob.charges(5000, 5000)
+c_large = ob.charges(500000, 500000)
+print(f"12 charges       : Rs5k round trip {c_small:.2f} ({c_small/5000*100:.3f}%) | "
+      f"Rs5L round trip {c_large:.2f} ({c_large/500000*100:.3f}%)")
+assert 0.0008 < c_small/5000 < 0.0015, "5k round trip should land near 0.10%"
+assert c_large/500000 < c_small/5000, "the Rs20 cap must make big orders cheaper per rupee"
+
+# 13. net = gross - costs, and shorts are charged like longs on the same turnover
+lng = ob._pnl("d", "LONG",  100.0, 101.0, "10:00", "10:15", "target", qty=50)
+sht = ob._pnl("d", "SHORT", 101.0, 100.0, "10:00", "10:15", "target", qty=50)
+print(f"13 net vs gross  : long gross {lng['gross']} cost {lng['cost']} net {lng['pnl']} | "
+      f"short gross {sht['gross']} cost {sht['cost']} net {sht['pnl']}")
+assert abs(lng["pnl"] - (lng["gross"] - lng["cost"])) < 0.05
+assert abs(lng["cost"] - sht["cost"]) < 0.05, "same turnover should cost the same either way"
+assert lng["pnl"] < lng["gross"], "costs must reduce the result"
 
 print("\nall checks passed")

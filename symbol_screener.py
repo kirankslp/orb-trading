@@ -72,13 +72,15 @@ def atr_pct(df, period=ATR_PERIOD):
     return float(atr / c.iloc[-1] * 100)   # ATR as % of price
 
 
-def metrics(df):
+def metrics(df, max_price=None):
     """Screening metrics from the tail of df, or None if it fails a filter."""
     if len(df) < MIN_BARS:
         return None
     price = float(df["Close"].iloc[-1])
     if price < MIN_PRICE:
         return None
+    if max_price is not None and price > max_price:
+        return None      # a slot that cannot buy one share is a wasted slot
     turnover = float(df["Volume"].tail(LOOKBACK_DAYS).mean()) * price
     if turnover < MIN_AVG_TURNOVER:
         return None
@@ -104,26 +106,28 @@ def rank(rows):
     return d.sort_values("score", ascending=False).reset_index(drop=True)
 
 
-def screen_asof(daily, asof=None):
+def screen_asof(daily, asof=None, max_price=None):
     """Rank the universe using only bars STRICTLY BEFORE `asof`.
 
     asof=None scores on everything available, which is what you want for
     tomorrow's watchlist. Passing a date is what keeps a backtest honest: on the
     morning of D the newest close you can possibly have seen is D-1's.
+
+    max_price drops names a single position could not buy a share of.
     """
     rows = []
     for sym, df in daily.items():
         if asof is not None:
             df = df[df.index.date < asof]
-        m = metrics(df)
+        m = metrics(df, max_price)
         if m:
             rows.append(dict(symbol=sym, **m))
     return rank(rows)
 
 
-def watchlist_asof(daily, asof, top_n=None):
+def watchlist_asof(daily, asof, top_n=None, max_price=None):
     """Symbols to trade on the session `asof`, ranked best first."""
-    d = screen_asof(daily, asof)
+    d = screen_asof(daily, asof, max_price)
     return [] if d.empty else d["symbol"].head(top_n or TOP_N).tolist()
 
 
