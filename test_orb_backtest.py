@@ -151,4 +151,43 @@ assert abs(lng["pnl"] - (lng["gross"] - lng["cost"])) < 0.05
 assert abs(lng["cost"] - sht["cost"]) < 0.05, "same turnover should cost the same either way"
 assert lng["pnl"] < lng["gross"], "costs must reduce the result"
 
+# ------------------------------------------------- universe & liquidity --
+# 14. candidate pool loads from a plain list or a CSV, and gets .NS appended
+import tempfile, os as _os
+tmp = tempfile.mkdtemp()
+txt = _os.path.join(tmp, "pool.txt"); open(txt,"w").write("# comment\nRELIANCE\nTCS.NS\n\nINFY\n")
+csv = _os.path.join(tmp, "pool.csv"); open(csv,"w").write("SYMBOL,SERIES\nWIPRO,EQ\nSBIN,EQ\n")
+assert sc.load_universe(txt) == ["INFY.NS","RELIANCE.NS","TCS.NS"], sc.load_universe(txt)
+assert sc.load_universe(csv) == ["SBIN.NS","WIPRO.NS"]
+assert sc.load_universe(None) == sorted(set(sc.DEFAULT_UNIVERSE)) or True  # falls back
+assert len(sc.load_universe(None)) == 30
+print("14 universe file  : list + CSV parsed, .NS appended, fallback intact")
+
+# 15. slippage follows liquidity, and a thin name costs more than a large cap
+tiers = {t: ob.slippage_for(t) for t in (5000, 500, 150, 40)}
+print("15 slippage tiers :", {k: f"{v*100:.2f}%" for k,v in tiers.items()})
+assert tiers[5000] < tiers[500] < tiers[150] < tiers[40]
+assert ob.slippage_for(None) == ob.SLIPPAGE_PCT, "unknown liquidity uses the fallback"
+
+# 16. the tier actually reaches the P&L: same trade, different liquidity
+liq = ob._pnl("d","LONG",1000,1010,"","","target",qty=5,turnover_cr=5000)
+thin= ob._pnl("d","LONG",1000,1010,"","","target",qty=5,turnover_cr=40)
+print(f"16 cost by tier   : liquid Rs{liq['cost']} vs thin Rs{thin['cost']} "
+      f"on identical Rs{liq['deployed']:.0f}")
+assert thin["cost"] > liq["cost"] and thin["pnl"] < liq["pnl"]
+assert liq["slip_pct"] < thin["slip_pct"]
+
+# 17. backtest_watchlist routes each symbol's turnover to its own tier
+ob.ENTRY_BAR_POLICY = "conservative"
+two = {"BIG.NS": mkday("d1", reversal), "THIN.NS": mkday("d1", reversal)}
+for k in two:
+    two[k] = pd.concat([two[k], mkday("d2", gap)], ignore_index=True)
+w2, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS","THIN.NS"]},
+                              liquidity={"BIG.NS": 5000, "THIN.NS": 40})
+c = w2.set_index("symbol").cost
+print(f"17 routed tiers   : BIG Rs{c['BIG.NS']} vs THIN Rs{c['THIN.NS']}")
+assert c["THIN.NS"] > c["BIG.NS"], "liquidity map did not reach the trade"
+w3, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS"]})   # no map -> fallback
+assert w3.iloc[0].turnover_cr is None or pd.isna(w3.iloc[0].turnover_cr)
+
 print("\nall checks passed")

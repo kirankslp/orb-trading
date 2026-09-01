@@ -48,7 +48,17 @@ EXCH_TXN_PCT   = 0.0000297    # NSE, both legs
 SEBI_PCT       = 0.000001     # both legs
 STAMP_BUY_PCT  = 0.00003      # buy leg only
 GST_PCT        = 0.18         # on brokerage + txn + sebi
-SLIPPAGE_PCT   = 0.0005       # 0.05% per leg, stop/market fills
+
+# Slippage per leg, by the symbol's average daily turnover in Rs crore. A stop
+# order on a thin name crosses a wider book than one on RELIANCE, and a flat
+# rate would quietly flatter every midcap the screener picks. These are
+# ESTIMATES, not measured fills, and slippage is roughly half of all friction,
+# so they are the first thing to validate against real contract notes.
+SLIPPAGE_TIERS = [(1000, 0.0003),   # >1000 cr/day
+                  (300,  0.0005),   # 300-1000
+                  (100,  0.0010),   # 100-300
+                  (0,    0.0020)]   # under 100 cr, treat as expensive
+SLIPPAGE_PCT   = 0.0005       # fallback when turnover is unknown
 
 # How to treat the breakout candle itself. OHLC hides the intrabar path, so the
 # candle that triggers the entry may also contain the stop, the target, or both.
@@ -125,16 +135,28 @@ def charges(buy_val, sell_val):
     return brok + txn + sebi + stt + stamp + gst
 
 
+def slippage_for(turnover_cr=None):
+    """Per-leg slippage for a symbol of this liquidity."""
+    if turnover_cr is None:
+        return SLIPPAGE_PCT
+    for floor, slip in SLIPPAGE_TIERS:
+        if turnover_cr >= floor:
+            return slip
+    return SLIPPAGE_TIERS[-1][1]
+
+
 def _pnl(day, side, entry, exit_px, t_in, t_out, reason, ambiguous=False,
-         symbol=None, qty=1):
+         symbol=None, qty=1, turnover_cr=None):
     gross = ((exit_px - entry) if side == "LONG" else (entry - exit_px)) * qty
     # a short sells first, so the legs swap but the turnover is the same shape
     buy_val, sell_val = ((entry*qty, exit_px*qty) if side == "LONG"
                          else (exit_px*qty, entry*qty))
-    cost = charges(buy_val, sell_val) + (buy_val + sell_val) * SLIPPAGE_PCT
+    slip = slippage_for(turnover_cr)
+    cost = charges(buy_val, sell_val) + (buy_val + sell_val) * slip
     net = gross - cost
     deployed = entry * qty
     return dict(date=day, symbol=symbol, side=side, qty=qty,
+                turnover_cr=turnover_cr, slip_pct=round(slip*100, 4),
                 entry=round(entry,2), exit=round(exit_px,2), deployed=round(deployed,0),
                 entry_time=t_in, exit_time=t_out, reason=reason, ambiguous=ambiguous,
                 gross_pct=round(gross/deployed*100,3),
@@ -164,7 +186,7 @@ def or_candles():
     return OR_MINUTES // int(INTERVAL.replace("m", ""))
 
 
-def trade_day(day, g, n_or, symbol=None, budget=None):
+def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None):
     """Run one symbol through one session. Returns a trade dict, or None."""
     budget = slot_budget() if budget is None else budget
     g = g.sort_values("dt").reset_index(drop=True)
@@ -207,20 +229,20 @@ def trade_day(day, g, n_or, symbol=None, budget=None):
                                     allow_stop=ENTRY_BAR_POLICY == "conservative")
                 if hit:
                     px, reason, amb = hit
-                    return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty)
+                    return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr)
             continue
 
         # --- in a trade: check square-off, then the levels ---
         if t >= SQUAREOFF_TIME:
-            return _pnl(day, side, entry, c, entry_time, t, "squareoff", False, symbol, qty)
+            return _pnl(day, side, entry, c, entry_time, t, "squareoff", False, symbol, qty, turnover_cr)
         hit = _resolve_exit(side, sl, tgt, h, l)
         if hit:
             px, reason, amb = hit
-            return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty)
+            return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr)
 
     if side is not None:       # data ran out with the position still open
         last = g.iloc[-1]
-        return _pnl(day, side, entry, last["Close"], entry_time, last["time"], "eod", False, symbol, qty)
+        return _pnl(day, side, entry, last["Close"], entry_time, last["time"], "eod", False, symbol, qty, turnover_cr)
     return None
 
 
@@ -235,13 +257,18 @@ def backtest(df, symbol=None):
     return pd.DataFrame(trades)
 
 
-def backtest_watchlist(intraday, picks):
+def backtest_watchlist(intraday, picks, liquidity=None):
     """Daily picks. intraday: {symbol: df}. picks: {date: [symbols]}.
+
+    liquidity: {symbol: avg turnover in Rs crore}, used to pick the slippage
+    tier. Omit it and every fill is costed at the flat SLIPPAGE_PCT, which
+    flatters anything less liquid than a large cap.
 
     Returns (trades, unaffordable) where unaffordable lists the (date, symbol,
     price) slots the budget could not buy a single share of.
     """
     n_or, budget = or_candles(), slot_budget()
+    liquidity = liquidity or {}
     trades, unaffordable = [], []
     for day in sorted(picks):
         for sym in picks[day]:
@@ -255,7 +282,7 @@ def backtest_watchlist(intraday, picks):
             if px > budget:
                 unaffordable.append((day, sym, round(px, 1)))
                 continue
-            t = trade_day(day, g, n_or, sym, budget)
+            t = trade_day(day, g, n_or, sym, budget, liquidity.get(sym))
             if t:
                 trades.append(t)
     return pd.DataFrame(trades), unaffordable
@@ -328,8 +355,10 @@ def run_screener_mode():
     import symbol_screener as sc
 
     # Daily history is cheap and unlimited, so pull enough to score the FIRST
-    # session of the intraday window with a full lookback behind it.
-    daily = sc.fetch_daily(sc.UNIVERSE, days=sc.LOOKBACK_DAYS + 120)
+    # session of the intraday window with a full lookback behind it. The pool is
+    # only what gets fetched; the liquidity floor decides what is tradeable.
+    pool = sc.load_universe()
+    daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover
@@ -344,16 +373,20 @@ def run_screener_mode():
             f"the universe is affordable, or the liquidity filters are too tight.")
 
     needed = sorted({s for p in picks.values() for s in p})
-    print(f"{len(sessions)} sessions | {len(needed)} distinct symbols ever picked "
-          f"| top {MAX_POSITIONS}/day at Rs {budget:,.0f}/position")
+    # Median turnover across the window decides each symbol's slippage tier.
+    ranked = sc.screen_asof(daily, max_price=budget)
+    liquidity = dict(zip(ranked.symbol, ranked.turnover_cr)) if not ranked.empty else {}
+
+    print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} distinct "
+          f"symbols ever picked | top {MAX_POSITIONS}/day at Rs {budget:,.0f}/position")
     print("Fetching intraday bars...")
     intraday = load_many(needed)
     missing = [s for s in needed if s not in intraday]
     if missing:
         print(f"no intraday data for: {', '.join(missing)}")
-    trades, unaffordable = backtest_watchlist(intraday, picks)
+    trades, unaffordable = backtest_watchlist(intraday, picks, liquidity)
     report(trades, unaffordable=unaffordable,
-           title=f"ORB on daily screener picks (top {MAX_POSITIONS} of {len(sc.UNIVERSE)})")
+           title=f"ORB on daily screener picks (top {MAX_POSITIONS} of {len(pool)})")
 
 
 if __name__ == "__main__":

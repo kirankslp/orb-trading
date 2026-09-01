@@ -13,14 +13,23 @@ Also importable. orb_backtest calls watchlist_asof() once per historical
 session to rebuild the watchlist as it would have looked that morning.
 """
 
+import os
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
 
 # ------------------------- CONFIG -------------------------
-# Start with a liquid universe. These are NSE F&O / large-cap names.
-# Add ".NS" suffix for NSE. Replace with your own list any time.
-UNIVERSE = [
+# The candidate POOL is just what gets fetched. Liquidity decides the tradeable
+# universe, per day, from bars available before that morning. Point a file at
+# UNIVERSE_FILE (one symbol per line, or a CSV with a SYMBOL column) to widen the
+# pool beyond the large caps below; NSE publishes the full equity list as
+# EQUITY_L.csv, and any Nifty 500 constituent CSV works too. Symbols without a
+# suffix get ".NS" appended.
+UNIVERSE_FILE = None       # e.g. "nifty500.csv" or "EQUITY_L.csv"
+
+# Fallback pool when no file is given. NSE F&O / large-cap names.
+DEFAULT_UNIVERSE = [
     "RELIANCE.NS","TCS.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","SBIN.NS",
     "BHARTIARTL.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","HINDUNILVR.NS",
     "BAJFINANCE.NS","MARUTI.NS","TATAMOTORS.NS","SUNPHARMA.NS","TITAN.NS","WIPRO.NS",
@@ -33,6 +42,7 @@ ATR_PERIOD      = 14
 MIN_PRICE       = 50       # skip penny stocks
 MIN_AVG_TURNOVER= 50e7     # min avg daily turnover in Rs (50 cr) -> liquidity floor
 TOP_N           = 10       # size of final watchlist
+CHUNK           = 100      # symbols per yfinance download call
 # ranking weights (must sum to ~1)
 W_ATR           = 0.45     # reward movement
 W_TURNOVER      = 0.25     # reward liquidity
@@ -45,22 +55,53 @@ W_MOMENTUM      = 0.30     # reward directional strength
 MIN_BARS = max(ATR_PERIOD + 1, LOOKBACK_DAYS + 1)
 
 
+def load_universe(path=None):
+    """Candidate pool: one symbol per line, or a CSV with a SYMBOL column."""
+    path = path or UNIVERSE_FILE
+    if not path:
+        return list(DEFAULT_UNIVERSE)
+    if not os.path.exists(path):
+        raise SystemExit(f"UNIVERSE_FILE {path!r} not found")
+    if path.lower().endswith(".csv"):
+        df = pd.read_csv(path)
+        col = next((c for c in df.columns if c.strip().upper() == "SYMBOL"), df.columns[0])
+        syms = df[col].astype(str)
+    else:
+        with open(path) as f:
+            syms = pd.Series([ln.strip() for ln in f if ln.strip()
+                              and not ln.startswith("#")])
+    syms = (syms.str.strip().str.upper()
+                .map(lambda s: s if "." in s else s + ".NS"))
+    return sorted(set(syms) - {""})
+
+
 def fetch_daily(universe=None, days=None):
-    """Download daily bars once. Returns {symbol: DataFrame indexed by date}."""
-    universe = universe or UNIVERSE
+    """Download daily bars once. Returns {symbol: DataFrame indexed by date}.
+
+    Chunked, because a pool of a few hundred symbols in one call is where
+    yfinance starts dropping tickers silently.
+    """
+    universe = universe or load_universe()
     days = days or LOOKBACK_DAYS + 20
-    data = yf.download(universe, period=f"{days}d", interval="1d",
-                       group_by="ticker", progress=False)
-    if data.empty:
-        raise SystemExit("No daily data returned. Check symbols / internet access.")
-    out = {}
-    for sym in universe:
-        try:
-            df = data[sym].dropna()
-        except KeyError:
+    out, failed = {}, 0
+    for i in range(0, len(universe), CHUNK):
+        batch = universe[i:i+CHUNK]
+        data = yf.download(batch, period=f"{days}d", interval="1d",
+                           group_by="ticker", progress=False)
+        if data.empty:
+            failed += len(batch)
             continue
-        if not df.empty:
-            out[sym] = df
+        for sym in batch:
+            try:
+                df = data[sym].dropna() if len(batch) > 1 else data.dropna()
+            except KeyError:
+                continue
+            if not df.empty:
+                out[sym] = df
+    if not out:
+        raise SystemExit("No daily data returned. Check symbols / internet access.")
+    if len(universe) > CHUNK:
+        print(f"pool {len(universe)} symbols -> {len(out)} with usable history")
     return out
 
 
@@ -133,6 +174,11 @@ def watchlist_asof(daily, asof, top_n=None, max_price=None):
 
 def screen():
     return screen_asof(fetch_daily())
+
+
+# Back-compat alias. Prefer load_universe(); this stays so existing callers and
+# the UNIVERSE-length line in reports keep working.
+UNIVERSE = DEFAULT_UNIVERSE
 
 
 COLS = ["symbol","price","atr_pct","turnover_cr","momentum_pct","score"]
