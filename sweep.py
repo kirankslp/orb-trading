@@ -40,7 +40,8 @@ WIDE = [(0.008, 0.004), (0.020, 0.010), (0.030, 0.015), (0.040, 0.020),
 
 
 def build_cache(slots):
-    daily = sc.fetch_daily(sc.UNIVERSE, days=sc.LOOKBACK_DAYS + 120)
+    pool = sc.load_universe()
+    daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(ob.PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]
@@ -52,17 +53,23 @@ def build_cache(slots):
         raise SystemExit("screener returned no picks")
 
     needed = sorted({s for p in picks.values() for s in p})
-    print(f"{len(sessions)} sessions | {len(needed)} symbols | fetching intraday...")
+    ranked = sc.screen_asof(daily, max_price=budget)
+    liquidity = dict(zip(ranked.symbol, ranked.turnover_cr)) if not ranked.empty else {}
+
+    print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} symbols "
+          f"| fetching intraday...")
     intraday = ob.load_many(needed)
-    return dict(picks=picks, intraday=intraday, slots=slots,
-                day_budget=ob.DAY_BUDGET, built=datetime.datetime.now())
+    return dict(picks=picks, intraday=intraday, liquidity=liquidity, slots=slots,
+                pool=len(pool), day_budget=ob.DAY_BUDGET,
+                built=datetime.datetime.now())
 
 
 def load_cache(slots, refetch):
     if not refetch and os.path.exists(CACHE):
         with open(CACHE, "rb") as f:
             c = pickle.load(f)
-        stale = c["slots"] != slots or c["day_budget"] != ob.DAY_BUDGET
+        stale = (c["slots"] != slots or c["day_budget"] != ob.DAY_BUDGET
+                 or "liquidity" not in c)
         if not stale:
             age = datetime.datetime.now() - c["built"]
             print(f"using {CACHE} built {age.days}d {age.seconds//3600}h ago "
@@ -77,7 +84,8 @@ def load_cache(slots, refetch):
 
 def run(cache, tgt, sl):
     ob.TARGET_PCT, ob.SL_PCT, ob.MAX_POSITIONS = tgt, sl, cache["slots"]
-    tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"])
+    tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"],
+                                  cache.get("liquidity"))
     if tr.empty:
         return None, None
     n = len(tr)
@@ -137,8 +145,11 @@ def main():
         rows.append(r)
     d = pd.DataFrame(rows)
 
-    print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | "
-          f"cost model {ob.SLIPPAGE_PCT*100:.3f}%/leg slippage")
+    liq = cache.get("liquidity") or {}
+    tiers = sorted({ob.slippage_for(v) for v in liq.values()}) if liq else [ob.SLIPPAGE_PCT]
+    print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | pool "
+          f"{cache.get('pool', '?')} | slippage tiers in use: "
+          f"{', '.join(f'{t*100:.2f}%' for t in tiers)}/leg")
     print(f"vs-base columns compare against {grid[0][0]*100:.1f}%/"
           f"{grid[0][1]*100:.2f}% on identical entries (paired)")
     print("="*118)

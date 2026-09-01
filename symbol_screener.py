@@ -6,8 +6,8 @@ to produce a short daily watchlist.
     pip install yfinance pandas numpy
     python symbol_screener.py
 
-Runs on daily data (fast, reliable on Yahoo). Edit UNIVERSE and the
-weights/filters in CONFIG. Output: ranked table + watchlist.csv
+Runs on daily data (fast, reliable on Yahoo). Point UNIVERSE_FILE at a symbol
+list to widen the pool; edit the weights/filters in CONFIG. Output: ranked table + watchlist.csv
 
 Also importable. orb_backtest calls watchlist_asof() once per historical
 session to rebuild the watchlist as it would have looked that morning.
@@ -174,11 +174,6 @@ def watchlist_asof(daily, asof, top_n=None, max_price=None):
 
 def screen():
     return screen_asof(fetch_daily())
-
-
-# Back-compat alias. Prefer load_universe(); this stays so existing callers and
-# the UNIVERSE-length line in reports keep working.
-UNIVERSE = DEFAULT_UNIVERSE
 
 
 COLS = ["symbol","price","atr_pct","turnover_cr","momentum_pct","score"]

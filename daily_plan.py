@@ -27,10 +27,18 @@ def today_ist():
 
 def todays_watchlist(n=None, days=None):
     """Rank on closes through YESTERDAY. Slicing strictly before today also
-    drops the partial daily bar Yahoo serves while the session is live."""
-    daily = sc.fetch_daily(sc.UNIVERSE, days=days or sc.LOOKBACK_DAYS + 60)
-    return sc.watchlist_asof(daily, today_ist(), n or ob.MAX_POSITIONS,
-                             max_price=ob.slot_budget())
+    drops the partial daily bar Yahoo serves while the session is live.
+
+    Returns (symbols, {symbol: turnover_cr}) so levels can be costed at each
+    name's own slippage tier rather than a flat rate.
+    """
+    daily = sc.fetch_daily(sc.load_universe(), days=days or sc.LOOKBACK_DAYS + 60)
+    budget = ob.slot_budget()
+    ranked = sc.screen_asof(daily, today_ist(), max_price=budget)
+    if ranked.empty:
+        return [], {}
+    syms = ranked.symbol.head(n or ob.MAX_POSITIONS).tolist()
+    return syms, dict(zip(ranked.symbol, ranked.turnover_cr))
 
 
 def opening_range(df, day, n_or):
@@ -42,7 +50,7 @@ def opening_range(df, day, n_or):
     return float(b["High"].max()), float(b["Low"].min()), g.iloc[n_or-1]["time"]
 
 
-def levels(symbol, or_high, or_low, budget):
+def levels(symbol, or_high, or_low, budget, turnover_cr=None):
     """Both sides of the breakout as placeable stop orders."""
     rows = []
     for side, trig in (("LONG", or_high), ("SHORT", or_low)):
@@ -55,7 +63,7 @@ def levels(symbol, or_high, or_low, budget):
         # net of charges + slippage, same accounting the backtest uses, so these
         # are what actually lands in the account rather than the raw stop distance
         cost = (ob.charges(trig*qty, sl*qty)
-                + (trig*qty + sl*qty) * ob.SLIPPAGE_PCT)
+                + (trig*qty + sl*qty) * ob.slippage_for(turnover_cr))
         risk, reward = abs(trig-sl)*qty + cost, abs(tgt-trig)*qty - cost
         rows.append(dict(symbol=symbol, side=side, trigger=round(trig,2),
                          stop=round(sl,2), target=round(tgt,2), qty=qty,
@@ -67,7 +75,7 @@ def levels(symbol, or_high, or_low, budget):
 
 def build(premarket=False):
     day, n_or, budget = today_ist(), ob.or_candles(), ob.slot_budget()
-    syms = todays_watchlist()
+    syms, liq = todays_watchlist()
     if not syms:
         return day, [], [], "screener returned nothing affordable"
 
@@ -86,7 +94,7 @@ def build(premarket=False):
             pending.append(f"{s}: range still forming, need {n_or} candles")
             continue
         hi, lo, done_at = r
-        rows.extend(levels(s, hi, lo, budget))
+        rows.extend(levels(s, hi, lo, budget, liq.get(s)))
     return day, syms, rows, "; ".join(pending) if pending else None
 
 
