@@ -27,10 +27,16 @@ import symbol_screener as sc
 
 CACHE = "sweep_cache.pkl"
 
-# (target, stop). Held at 2:1 so the sweep isolates SIZE from ratio; the last two
-# widen the ratio as well, to see whether the stop or the target is the problem.
+# (target, stop) as fixed fractions, used when STOP_MODE == "pct". Held at 2:1
+# so the sweep isolates SIZE from ratio; the last three widen the ratio too, to
+# see whether the stop or the target is the problem.
 GRID = [(0.008, 0.004), (0.012, 0.006), (0.016, 0.008), (0.020, 0.010),
         (0.030, 0.015), (0.012, 0.008), (0.016, 0.010), (0.024, 0.012)]
+
+# (target, stop) as ATR MULTIPLES, used when STOP_MODE == "atr". Same shape, but
+# each symbol converts these to its own percentage.
+ATR_GRID = [(1.0, 0.5), (1.5, 0.75), (2.0, 1.0), (3.0, 1.5),
+            (1.5, 1.0), (2.0, 1.25), (4.0, 2.0), (0.6, 0.3)]
 
 # --wide: does gross keep climbing, or does it flatten as everything turns into
 # a hold-to-squareoff? The answer decides whether widening is an edge or just a
@@ -83,7 +89,11 @@ def load_cache(slots, refetch):
 
 
 def run(cache, tgt, sl):
-    ob.TARGET_PCT, ob.SL_PCT, ob.MAX_POSITIONS = tgt, sl, cache["slots"]
+    ob.MAX_POSITIONS = cache["slots"]
+    if ob.STOP_MODE == "atr":
+        ob.ATR_TARGET_MULT, ob.ATR_STOP_MULT = tgt, sl
+    else:
+        ob.TARGET_PCT, ob.SL_PCT = tgt, sl
     tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"],
                                   cache.get("liquidity"))
     if tr.empty:
@@ -94,7 +104,8 @@ def run(cache, tgt, sl):
     # SE of mean net per trade: how much of this is signal vs 40 sessions of luck
     se = tr.pnl.std(ddof=1) / np.sqrt(n)
     return dict(
-        tgt=tgt*100, sl=sl*100, rr=tgt/sl, n=n,
+        tgt=tgt*(1 if ob.STOP_MODE == "atr" else 100),
+        sl=sl*(1 if ob.STOP_MODE == "atr" else 100), rr=tgt/sl, n=n,
         win=(tr.pnl > 0).mean()*100,
         gross=tr.gross.sum(), cost=tr.cost.sum(), net=tr.pnl.sum(),
         per_trade=tr.pnl.mean(), se=se,
@@ -132,7 +143,12 @@ def main():
     a = ap.parse_args()
 
     cache = load_cache(a.slots, a.refetch)
-    grid = WIDE if a.wide else GRID
+    atr = ob.STOP_MODE == "atr"
+    grid = (WIDE if a.wide else ATR_GRID if atr else GRID)
+    if atr and a.wide:
+        grid = [(t*2, s*2) for t, s in ATR_GRID[:1]] + \
+               [(m, m/2) for m in (2.0, 3.0, 4.0, 6.0, 8.0, 12.0)]
+    unit = "xATR" if atr else "%"
 
     rows, base = [], None
     for t, s in grid:
@@ -150,8 +166,9 @@ def main():
     print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | pool "
           f"{cache.get('pool', '?')} | slippage tiers in use: "
           f"{', '.join(f'{t*100:.2f}%' for t in tiers)}/leg")
-    print(f"vs-base columns compare against {grid[0][0]*100:.1f}%/"
-          f"{grid[0][1]*100:.2f}% on identical entries (paired)")
+    scale = 1 if atr else 100
+    print(f"levels in {unit} | vs-base compares against "
+          f"{grid[0][0]*scale:g}/{grid[0][1]*scale:g} on identical entries (paired)")
     print("="*118)
     show = d.copy()
     show["net/trade"] = show.per_trade.round(1).astype(str) + " +-" + show.se.round(1).astype(str)
@@ -167,7 +184,7 @@ def main():
     print("="*118)
 
     best = d.loc[d.net.idxmax()]
-    print(f"\nBest net: {best.tgt:.1f}%/{best.sl:.2f}% -> Rs {best.net:,.0f} "
+    print(f"\nBest net: {best.tgt:g}/{best.sl:g} {unit} -> Rs {best.net:,.0f} "
           f"over {best.n:.0f} trades")
     print(f"  gross/trade Rs {best.gross_pt:.1f}, cost/trade "
           f"Rs {best.cost/best.n:.1f}, net/trade Rs {best.per_trade:.1f} "

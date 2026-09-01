@@ -26,9 +26,23 @@ SYMBOL         = "^NSEI"      # used by single mode. "^NSEBANK", "RELIANCE.NS"
 INTERVAL       = "15m"        # 5m or 15m
 PERIOD         = "60d"        # yfinance intraday history cap ~60d
 OR_MINUTES     = 45           # opening range = first N minutes
-SL_PCT         = 0.004        # stop loss 0.4% from entry
-TARGET_PCT     = 0.008        # target 0.8% from entry (2:1)
 SQUAREOFF_TIME = "15:15"      # force exit time
+
+# ---- stop and target sizing ----
+# "pct" uses the fixed SL_PCT/TARGET_PCT below, the same distance for every
+# symbol. "atr" scales both by the symbol's own daily ATR%.
+#
+# A fixed 0.4% stop is about a tenth of an ATR on a microcap, so it gets
+# resolved by noise rather than by the trade being wrong: over a 2565-name pool
+# that produced 58 stops against 10 targets with no square-offs at all. A stop
+# has to mean the same thing on RELIANCE as on a 5%-ATR smallcap, and only an
+# ATR-relative one does.
+STOP_MODE       = "atr"       # "atr" or "pct"
+ATR_STOP_MULT   = 0.5         # stop at 0.5 x daily ATR
+ATR_TARGET_MULT = 1.0         # target at 1.0 x daily ATR (so still 2:1)
+ATR_BOUNDS      = (0.002, 0.05)   # clamp the derived stop to 0.2% .. 5%
+SL_PCT         = 0.004        # "pct" mode: stop 0.4% from entry
+TARGET_PCT     = 0.008        # "pct" mode: target 0.8% from entry (2:1)
 
 # ---- capital ----
 DAY_BUDGET     = 10000        # TOTAL rupees working across all positions in a day
@@ -146,7 +160,7 @@ def slippage_for(turnover_cr=None):
 
 
 def _pnl(day, side, entry, exit_px, t_in, t_out, reason, ambiguous=False,
-         symbol=None, qty=1, turnover_cr=None):
+         symbol=None, qty=1, turnover_cr=None, sl_pct=None, tgt_pct=None):
     gross = ((exit_px - entry) if side == "LONG" else (entry - exit_px)) * qty
     # a short sells first, so the legs swap but the turnover is the same shape
     buy_val, sell_val = ((entry*qty, exit_px*qty) if side == "LONG"
@@ -157,6 +171,8 @@ def _pnl(day, side, entry, exit_px, t_in, t_out, reason, ambiguous=False,
     deployed = entry * qty
     return dict(date=day, symbol=symbol, side=side, qty=qty,
                 turnover_cr=turnover_cr, slip_pct=round(slip*100, 4),
+                sl_pct=None if sl_pct is None else round(sl_pct*100, 3),
+                tgt_pct=None if tgt_pct is None else round(tgt_pct*100, 3),
                 entry=round(entry,2), exit=round(exit_px,2), deployed=round(deployed,0),
                 entry_time=t_in, exit_time=t_out, reason=reason, ambiguous=ambiguous,
                 gross_pct=round(gross/deployed*100,3),
@@ -186,9 +202,23 @@ def or_candles():
     return OR_MINUTES // int(INTERVAL.replace("m", ""))
 
 
-def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None):
+def levels_for(atr_pct=None):
+    """(stop, target) as fractions of entry, for one symbol.
+
+    In atr mode the target is derived from the CLAMPED stop, so hitting a bound
+    shrinks both legs together and the reward-to-risk ratio survives.
+    """
+    if STOP_MODE != "atr" or not atr_pct or not np.isfinite(atr_pct):
+        return SL_PCT, TARGET_PCT
+    lo, hi = ATR_BOUNDS
+    sl = min(max(atr_pct/100.0 * ATR_STOP_MULT, lo), hi)
+    return sl, sl * (ATR_TARGET_MULT / ATR_STOP_MULT)
+
+
+def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None, atr_pct=None):
     """Run one symbol through one session. Returns a trade dict, or None."""
     budget = slot_budget() if budget is None else budget
+    sl_pct, tgt_pct = levels_for(atr_pct)
     g = g.sort_values("dt").reset_index(drop=True)
     if len(g) < n_or + 2:
         return None
@@ -209,11 +239,11 @@ def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None):
             if h > or_high:
                 side, entry_time = "LONG", t
                 entry = max(or_high, o)     # a gap through the level fills worse
-                sl, tgt = entry*(1-SL_PCT), entry*(1+TARGET_PCT)
+                sl, tgt = entry*(1-sl_pct), entry*(1+tgt_pct)
             elif l < or_low:
                 side, entry_time = "SHORT", t
                 entry = min(or_low, o)
-                sl, tgt = entry*(1+SL_PCT), entry*(1-TARGET_PCT)
+                sl, tgt = entry*(1+sl_pct), entry*(1-tgt_pct)
             else:
                 continue
 
@@ -229,20 +259,20 @@ def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None):
                                     allow_stop=ENTRY_BAR_POLICY == "conservative")
                 if hit:
                     px, reason, amb = hit
-                    return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr)
+                    return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr, sl_pct, tgt_pct)
             continue
 
         # --- in a trade: check square-off, then the levels ---
         if t >= SQUAREOFF_TIME:
-            return _pnl(day, side, entry, c, entry_time, t, "squareoff", False, symbol, qty, turnover_cr)
+            return _pnl(day, side, entry, c, entry_time, t, "squareoff", False, symbol, qty, turnover_cr, sl_pct, tgt_pct)
         hit = _resolve_exit(side, sl, tgt, h, l)
         if hit:
             px, reason, amb = hit
-            return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr)
+            return _pnl(day, side, entry, px, entry_time, t, reason, amb, symbol, qty, turnover_cr, sl_pct, tgt_pct)
 
     if side is not None:       # data ran out with the position still open
         last = g.iloc[-1]
-        return _pnl(day, side, entry, last["Close"], entry_time, last["time"], "eod", False, symbol, qty, turnover_cr)
+        return _pnl(day, side, entry, last["Close"], entry_time, last["time"], "eod", False, symbol, qty, turnover_cr, sl_pct, tgt_pct)
     return None
 
 
@@ -257,18 +287,20 @@ def backtest(df, symbol=None):
     return pd.DataFrame(trades)
 
 
-def backtest_watchlist(intraday, picks, liquidity=None):
+def backtest_watchlist(intraday, picks, metrics=None):
     """Daily picks. intraday: {symbol: df}. picks: {date: [symbols]}.
 
-    liquidity: {symbol: avg turnover in Rs crore}, used to pick the slippage
-    tier. Omit it and every fill is costed at the flat SLIPPAGE_PCT, which
-    flatters anything less liquid than a large cap.
+    metrics: {(date, symbol): {"atr_pct": .., "turnover_cr": ..}} from the
+    screener's own point-in-time ranking. ATR sets the stop distance and
+    turnover sets the slippage tier, and both must come from the day they were
+    measured, not from the end of the window. Omit it and every symbol gets the
+    flat SL_PCT and SLIPPAGE_PCT, which flatters anything volatile or thin.
 
     Returns (trades, unaffordable) where unaffordable lists the (date, symbol,
     price) slots the budget could not buy a single share of.
     """
     n_or, budget = or_candles(), slot_budget()
-    liquidity = liquidity or {}
+    metrics = metrics or {}
     trades, unaffordable = [], []
     for day in sorted(picks):
         for sym in picks[day]:
@@ -282,7 +314,9 @@ def backtest_watchlist(intraday, picks, liquidity=None):
             if px > budget:
                 unaffordable.append((day, sym, round(px, 1)))
                 continue
-            t = trade_day(day, g, n_or, sym, budget, liquidity.get(sym))
+            m = metrics.get((day, sym)) or {}
+            t = trade_day(day, g, n_or, sym, budget,
+                          m.get("turnover_cr"), m.get("atr_pct"))
             if t:
                 trades.append(t)
     return pd.DataFrame(trades), unaffordable
@@ -306,6 +340,12 @@ def report(tr, title="", unaffordable=None):
     print(f"{INTERVAL} | sessions {tr.date.nunique()} | entry-bar policy {ENTRY_BAR_POLICY}")
     print(f"Budget Rs {DAY_BUDGET:,.0f}/day x {LEVERAGE:g} leverage "
           f"over {MAX_POSITIONS} slots = Rs {slot_budget():,.0f}/position")
+    if STOP_MODE == "atr":
+        print(f"Stops {ATR_STOP_MULT:g}x ATR / targets {ATR_TARGET_MULT:g}x ATR "
+              f"(per symbol): stop {tr.sl_pct.min():.2f}%-{tr.sl_pct.max():.2f}%, "
+              f"median {tr.sl_pct.median():.2f}%")
+    else:
+        print(f"Fixed stop {SL_PCT*100:.2f}% / target {TARGET_PCT*100:.2f}%")
     print("="*70)
     print(f"Total trades   : {len(tr)}")
     print(f"Win rate       : {len(wins)/len(tr)*100:.1f}%")
@@ -363,20 +403,25 @@ def run_screener_mode():
     cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover
 
-    budget = slot_budget()
-    picks = {d: sc.watchlist_asof(daily, d, MAX_POSITIONS, max_price=budget)
-             for d in sessions}
-    picks = {d: p for d, p in picks.items() if p}
+    # One ranking per session, keeping the metrics alongside the picks. ATR and
+    # turnover have to be the values known that morning, so they come from the
+    # same strictly-before slice that chose the symbols.
+    budget, picks, metrics = slot_budget(), {}, {}
+    for d in sessions:
+        ranked = sc.screen_asof(daily, d, max_price=budget)
+        if ranked.empty:
+            continue
+        top = ranked.head(MAX_POSITIONS)
+        picks[d] = top.symbol.tolist()
+        for r in top.itertuples():
+            metrics[(d, r.symbol)] = dict(atr_pct=r.atr_pct,
+                                          turnover_cr=r.turnover_cr)
     if not picks:
         raise SystemExit(
             f"Screener returned no picks. At Rs {budget:,.0f}/position nothing in "
             f"the universe is affordable, or the liquidity filters are too tight.")
 
     needed = sorted({s for p in picks.values() for s in p})
-    # Median turnover across the window decides each symbol's slippage tier.
-    ranked = sc.screen_asof(daily, max_price=budget)
-    liquidity = dict(zip(ranked.symbol, ranked.turnover_cr)) if not ranked.empty else {}
-
     print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} distinct "
           f"symbols ever picked | top {MAX_POSITIONS}/day at Rs {budget:,.0f}/position")
     print("Fetching intraday bars...")
@@ -384,7 +429,7 @@ def run_screener_mode():
     missing = [s for s in needed if s not in intraday]
     if missing:
         print(f"no intraday data for: {', '.join(missing)}")
-    trades, unaffordable = backtest_watchlist(intraday, picks, liquidity)
+    trades, unaffordable = backtest_watchlist(intraday, picks, metrics)
     report(trades, unaffordable=unaffordable,
            title=f"ORB on daily screener picks (top {MAX_POSITIONS} of {len(pool)})")
 

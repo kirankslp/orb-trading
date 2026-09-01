@@ -106,6 +106,7 @@ intraday = {"A.NS": mkday("d1", reversal), "B.NS": mkday("d1", short),
 for k in intraday:
     intraday[k] = pd.concat([intraday[k], mkday("d2", gap)], ignore_index=True)
 picks = {"d1": ["A.NS","B.NS"], "d2": ["C.NS"]}
+ob.STOP_MODE = "pct"   # fixed levels for the pre-ATR checks
 w, unaff = ob.backtest_watchlist(intraday, picks)
 got = {(r.date, r.symbol) for r in w.itertuples()}
 print("8 watchlist run   :", sorted(got))
@@ -183,11 +184,52 @@ two = {"BIG.NS": mkday("d1", reversal), "THIN.NS": mkday("d1", reversal)}
 for k in two:
     two[k] = pd.concat([two[k], mkday("d2", gap)], ignore_index=True)
 w2, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS","THIN.NS"]},
-                              liquidity={"BIG.NS": 5000, "THIN.NS": 40})
+        metrics={("d1","BIG.NS"): {"turnover_cr": 5000},
+                 ("d1","THIN.NS"): {"turnover_cr": 40}})
 c = w2.set_index("symbol").cost
 print(f"17 routed tiers   : BIG Rs{c['BIG.NS']} vs THIN Rs{c['THIN.NS']}")
 assert c["THIN.NS"] > c["BIG.NS"], "liquidity map did not reach the trade"
 w3, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS"]})   # no map -> fallback
 assert w3.iloc[0].turnover_cr is None or pd.isna(w3.iloc[0].turnover_cr)
+
+# ------------------------------------------------------------- ATR levels --
+# 18. atr mode scales the stop with the symbol, pct mode does not
+ob.STOP_MODE, ob.ATR_STOP_MULT, ob.ATR_TARGET_MULT = "atr", 0.5, 1.0
+calm_sl,  calm_tgt  = ob.levels_for(1.0)    # 1% ATR -> 0.50% stop
+wild_sl,  wild_tgt  = ob.levels_for(6.0)    # 6% ATR -> 3.00% stop
+print(f"18 atr levels     : 1% ATR -> stop {calm_sl*100:.2f}% | "
+      f"6% ATR -> stop {wild_sl*100:.2f}%")
+assert abs(calm_sl - 0.005) < 1e-9 and abs(wild_sl - 0.03) < 1e-9
+assert abs(calm_tgt/calm_sl - 2.0) < 1e-9, "2:1 must survive the scaling"
+ob.STOP_MODE = "pct"
+assert ob.levels_for(6.0) == (ob.SL_PCT, ob.TARGET_PCT), "pct mode ignores ATR"
+ob.STOP_MODE = "atr"
+assert ob.levels_for(None) == (ob.SL_PCT, ob.TARGET_PCT), "no ATR -> fixed fallback"
+
+# 19. bounds clamp, and the ratio survives the clamp
+ob.ATR_BOUNDS = (0.002, 0.05)
+hug_sl, hug_tgt = ob.levels_for(40.0)       # 20% raw stop, clamped to 5%
+tiny_sl, _      = ob.levels_for(0.1)        # 0.05% raw, floored at 0.2%
+print(f"19 atr bounds     : 40% ATR -> {hug_sl*100:.2f}% (capped) | "
+      f"0.1% ATR -> {tiny_sl*100:.2f}% (floored)")
+assert hug_sl == 0.05 and tiny_sl == 0.002
+assert abs(hug_tgt/hug_sl - 2.0) < 1e-9, "clamping must not distort R:R"
+
+# 20. a volatile symbol and a calm one get different stops in the same run
+ob.STOP_MODE = "atr"
+vol = {"CALM.NS": mkday("d1", reversal), "WILD.NS": mkday("d1", reversal)}
+for k in vol:
+    vol[k] = pd.concat([vol[k], mkday("d2", gap)], ignore_index=True)
+wv, _ = ob.backtest_watchlist(vol, {"d1": ["CALM.NS","WILD.NS"]},
+        metrics={("d1","CALM.NS"): {"atr_pct": 0.8, "turnover_cr": 5000},
+                 ("d1","WILD.NS"): {"atr_pct": 6.0, "turnover_cr": 5000}})
+got = wv.set_index("symbol")
+print(f"20 per-symbol stop: CALM {got.loc['CALM.NS','sl_pct']}% -> "
+      f"{got.loc['CALM.NS','reason']} | WILD {got.loc['WILD.NS','sl_pct']}% -> "
+      f"{got.loc['WILD.NS','reason']}")
+assert got.loc["WILD.NS","sl_pct"] > got.loc["CALM.NS","sl_pct"]
+# the tight stop gets hit by the same reversal the wide one rides out
+assert got.loc["CALM.NS","reason"] == "stoploss"
+assert got.loc["WILD.NS","reason"] != "stoploss", "3% stop should survive a 1% dip"
 
 print("\nall checks passed")
