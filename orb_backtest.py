@@ -301,6 +301,7 @@ def backtest_watchlist(intraday, picks, metrics=None):
     """
     n_or, budget = or_candles(), slot_budget()
     metrics = metrics or {}
+    matched = 0
     trades, unaffordable = [], []
     for day in sorted(picks):
         for sym in picks[day]:
@@ -315,10 +316,17 @@ def backtest_watchlist(intraday, picks, metrics=None):
                 unaffordable.append((day, sym, round(px, 1)))
                 continue
             m = metrics.get((day, sym)) or {}
+            matched += bool(m)
             t = trade_day(day, g, n_or, sym, budget,
                           m.get("turnover_cr"), m.get("atr_pct"))
             if t:
                 trades.append(t)
+    if metrics and not matched and trades:
+        # every lookup missed: wrong key shape, so ATR and turnover silently
+        # fell back to the fixed defaults and the run means nothing
+        print(f"warning: metrics has {len(metrics)} entries but none matched a "
+              f"(date, symbol) traded. Expected keys like {next(iter(metrics))!r}. "
+              f"Levels and slippage fell back to defaults.")
     return pd.DataFrame(trades), unaffordable
 
 

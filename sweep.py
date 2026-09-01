@@ -53,19 +53,24 @@ def build_cache(slots):
     sessions = [d for d in sessions if d > cutoff]
 
     budget = ob.DAY_BUDGET * ob.LEVERAGE / slots
-    picks = {d: sc.watchlist_asof(daily, d, slots, max_price=budget) for d in sessions}
-    picks = {d: p for d, p in picks.items() if p}
+    picks, metrics = {}, {}
+    for d in sessions:
+        ranked = sc.screen_asof(daily, d, max_price=budget)
+        if ranked.empty:
+            continue
+        top = ranked.head(slots)
+        picks[d] = top.symbol.tolist()
+        for r in top.itertuples():
+            metrics[(d, r.symbol)] = dict(atr_pct=r.atr_pct, turnover_cr=r.turnover_cr)
     if not picks:
         raise SystemExit("screener returned no picks")
 
     needed = sorted({s for p in picks.values() for s in p})
-    ranked = sc.screen_asof(daily, max_price=budget)
-    liquidity = dict(zip(ranked.symbol, ranked.turnover_cr)) if not ranked.empty else {}
 
     print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} symbols "
           f"| fetching intraday...")
     intraday = ob.load_many(needed)
-    return dict(picks=picks, intraday=intraday, liquidity=liquidity, slots=slots,
+    return dict(picks=picks, intraday=intraday, metrics=metrics, slots=slots,
                 pool=len(pool), day_budget=ob.DAY_BUDGET,
                 built=datetime.datetime.now())
 
@@ -75,7 +80,7 @@ def load_cache(slots, refetch):
         with open(CACHE, "rb") as f:
             c = pickle.load(f)
         stale = (c["slots"] != slots or c["day_budget"] != ob.DAY_BUDGET
-                 or "liquidity" not in c)
+                 or "metrics" not in c)   # pre-ATR caches carry no per-day metrics
         if not stale:
             age = datetime.datetime.now() - c["built"]
             print(f"using {CACHE} built {age.days}d {age.seconds//3600}h ago "
@@ -95,7 +100,7 @@ def run(cache, tgt, sl):
     else:
         ob.TARGET_PCT, ob.SL_PCT = tgt, sl
     tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"],
-                                  cache.get("liquidity"))
+                                  cache.get("metrics"))
     if tr.empty:
         return None, None
     n = len(tr)
@@ -161,8 +166,9 @@ def main():
         rows.append(r)
     d = pd.DataFrame(rows)
 
-    liq = cache.get("liquidity") or {}
-    tiers = sorted({ob.slippage_for(v) for v in liq.values()}) if liq else [ob.SLIPPAGE_PCT]
+    met = cache.get("metrics") or {}
+    tiers = (sorted({ob.slippage_for(m.get("turnover_cr")) for m in met.values()})
+             if met else [ob.SLIPPAGE_PCT])
     print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | pool "
           f"{cache.get('pool', '?')} | slippage tiers in use: "
           f"{', '.join(f'{t*100:.2f}%' for t in tiers)}/leg")

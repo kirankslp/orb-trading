@@ -232,4 +232,14 @@ assert got.loc["WILD.NS","sl_pct"] > got.loc["CALM.NS","sl_pct"]
 assert got.loc["CALM.NS","reason"] == "stoploss"
 assert got.loc["WILD.NS","reason"] != "stoploss", "3% stop should survive a 1% dip"
 
+# 21. a metrics dict keyed the wrong way warns instead of silently defaulting
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ob.backtest_watchlist(vol, {"d1": ["CALM.NS"]},
+                          metrics={"CALM.NS": {"atr_pct": 6.0}})   # symbol-keyed
+out = buf.getvalue()
+print("21 shape guard    :", "warned" if "none matched" in out else "SILENT (bad)")
+assert "none matched" in out, "wrong-shaped metrics must not pass silently"
+
 print("\nall checks passed")
