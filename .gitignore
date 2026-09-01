@@ -5,3 +5,4 @@ watchlist.csv
 daily_plan.csv
 logs/
 sweep_cache.pkl
+kite_instruments.csv

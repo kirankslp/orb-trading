@@ -21,6 +21,9 @@ import pandas as pd
 import numpy as np
 
 # ------------------------- CONFIG -------------------------
+DATA_PROVIDER  = "yahoo"      # "yahoo" (free, 60-day intraday cap, noisy ticks)
+                              # or "kite" (paid, long history, exchange feed;
+                              # needs KITE_API_KEY + KITE_ACCESS_TOKEN)
 UNIVERSE_MODE  = "screener"   # "screener" (daily picks) or "single"
 SYMBOL         = "^NSEI"      # used by single mode. "^NSEBANK", "RELIANCE.NS"
 INTERVAL       = "15m"        # 5m or 15m
@@ -104,6 +107,12 @@ def _normalize(df):
 
 
 def load_data(symbol=None):
+    if DATA_PROVIDER == "kite":
+        import data_kite
+        got = data_kite.load_intraday([symbol or SYMBOL], INTERVAL, PERIOD)
+        if not got:
+            raise SystemExit(f"Kite returned no bars for {symbol or SYMBOL}")
+        return next(iter(got.values()))
     df = yf.download(symbol or SYMBOL, period=PERIOD, interval=INTERVAL, progress=False)
     if df.empty:
         raise SystemExit("No data returned. Check symbol / internet access.")
@@ -113,6 +122,9 @@ def load_data(symbol=None):
 def load_many(symbols):
     """One multi-ticker intraday download, split per symbol."""
     symbols = list(symbols)
+    if DATA_PROVIDER == "kite":
+        import data_kite
+        return data_kite.load_intraday(symbols, INTERVAL, PERIOD)
     if len(symbols) == 1:
         return {symbols[0]: load_data(symbols[0])}
     raw = yf.download(symbols, period=PERIOD, interval=INTERVAL,
@@ -196,6 +208,15 @@ def _resolve_exit(side, sl, tgt, h, l, allow_stop=True):
     if hit_tgt:
         return tgt, "target", ambiguous
     return None
+
+
+def fetch_daily_via(pool, days):
+    """Daily bars from whichever provider DATA_PROVIDER names."""
+    if DATA_PROVIDER == "kite":
+        import data_kite
+        return data_kite.fetch_daily(pool, days=days)
+    import symbol_screener as sc
+    return sc.fetch_daily(pool, days=days)
 
 
 def or_candles():
@@ -406,7 +427,7 @@ def run_screener_mode():
     # session of the intraday window with a full lookback behind it. The pool is
     # only what gets fetched; the liquidity floor decides what is tradeable.
     pool = sc.load_universe()
-    daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120)
+    daily = fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover

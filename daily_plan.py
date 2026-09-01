@@ -32,7 +32,7 @@ def todays_watchlist(n=None, days=None):
     Returns (symbols, {symbol: turnover_cr}) so levels can be costed at each
     name's own slippage tier rather than a flat rate.
     """
-    daily = sc.fetch_daily(sc.load_universe(), days=days or sc.LOOKBACK_DAYS + 60)
+    daily = ob.fetch_daily_via(sc.load_universe(), days or sc.LOOKBACK_DAYS + 60)
     budget = ob.slot_budget()
     ranked = sc.screen_asof(daily, today_ist(), max_price=budget)
     if ranked.empty:

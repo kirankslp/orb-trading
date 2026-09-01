@@ -47,7 +47,7 @@ WIDE = [(0.008, 0.004), (0.020, 0.010), (0.030, 0.015), (0.040, 0.020),
 
 def build_cache(slots):
     pool = sc.load_universe()
-    daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120)
+    daily = ob.fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(ob.PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]
