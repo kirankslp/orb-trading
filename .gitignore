@@ -10,3 +10,4 @@ creds.txt
 .unified-venv/
 web/node_modules/
 web/dist/
+kite_instruments.csv

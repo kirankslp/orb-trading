@@ -200,6 +200,12 @@ def _resolve_exit(side, sl, tgt, h, l, allow_stop=True):
     return None
 
 
+def fetch_daily_via(pool, days, market_data=None):
+    """Fetch daily bars through the shared Kite market-data adapter."""
+    import symbol_screener as sc
+    return sc.fetch_daily(pool, days=days, market_data=market_data or KiteMarketData())
+
+
 def or_candles():
     return OR_MINUTES // int(INTERVAL.replace("m", ""))
 
@@ -408,7 +414,7 @@ def run_screener_mode():
     # session of the intraday window with a full lookback behind it. The pool is
     # only what gets fetched; the liquidity floor decides what is tradeable.
     pool = sc.load_universe()
-    daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120)
+    daily = fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover
