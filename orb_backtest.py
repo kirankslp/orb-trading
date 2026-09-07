@@ -2,7 +2,7 @@
 Opening Range Breakout (ORB) intraday backtester.
 One trade per symbol per day. Single-file, dependency-light.
 
-    pip install yfinance pandas numpy
+    pip install -r requirements.txt
     python orb_backtest.py
 
 Two modes, set by UNIVERSE_MODE:
@@ -16,15 +16,15 @@ Edit CONFIG to change symbol, range window, stops, targets.
 
 import datetime
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
+from kite_data import KiteMarketData
 
 # ------------------------- CONFIG -------------------------
 UNIVERSE_MODE  = "screener"   # "screener" (daily picks) or "single"
-SYMBOL         = "^NSEI"      # used by single mode. "^NSEBANK", "RELIANCE.NS"
+SYMBOL         = "NIFTY 50"  # used by single mode. "NIFTY BANK", "RELIANCE.NS"
 INTERVAL       = "15m"        # 5m or 15m
-PERIOD         = "60d"        # yfinance intraday history cap ~60d
+PERIOD         = "60d"        # calendar days of Kite intraday history to fetch
 OR_MINUTES     = 45           # opening range = first N minutes
 SQUAREOFF_TIME = "15:15"      # force exit time
 
@@ -84,7 +84,7 @@ ENTRY_BAR_POLICY = "conservative"
 
 
 def _normalize(df):
-    """yfinance frame -> flat columns plus date/time/dt helpers, in IST."""
+    """Kite candle frame -> date/time/dt helpers, in IST."""
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df.reset_index()
@@ -103,26 +103,28 @@ def _normalize(df):
     return df
 
 
-def load_data(symbol=None):
-    df = yf.download(symbol or SYMBOL, period=PERIOD, interval=INTERVAL, progress=False)
+def _period_days(period=PERIOD):
+    try:
+        return int(str(period).removesuffix("d"))
+    except ValueError as exc:
+        raise ValueError(f"PERIOD must be expressed as calendar days, got {period!r}") from exc
+
+
+def load_data(symbol=None, market_data=None):
+    market_data = market_data or KiteMarketData()
+    df = market_data.intraday(symbol or SYMBOL, INTERVAL, _period_days())
     if df.empty:
-        raise SystemExit("No data returned. Check symbol / internet access.")
+        raise SystemExit("No Kite data returned. Check symbol, session token, and internet access.")
     return _normalize(df)
 
 
-def load_many(symbols):
-    """One multi-ticker intraday download, split per symbol."""
+def load_many(symbols, market_data=None):
+    """Fetch intraday candles per Kite instrument; empty sessions are omitted."""
+    market_data = market_data or KiteMarketData()
     symbols = list(symbols)
-    if len(symbols) == 1:
-        return {symbols[0]: load_data(symbols[0])}
-    raw = yf.download(symbols, period=PERIOD, interval=INTERVAL,
-                      group_by="ticker", progress=False)
     out = {}
     for s in symbols:
-        try:
-            d = raw[s].dropna(how="all")
-        except KeyError:
-            continue
+        d = market_data.intraday(s, INTERVAL, _period_days())
         if not d.empty:
             out[s] = _normalize(d)
     return out

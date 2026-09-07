@@ -5,3 +5,8 @@ watchlist.csv
 daily_plan.csv
 logs/
 sweep_cache.pkl
+creds.txt
+.env
+.unified-venv/
+web/node_modules/
+web/dist/

@@ -25,14 +25,15 @@ def today_ist():
     return pd.Timestamp.now(tz=IST).date()
 
 
-def todays_watchlist(n=None, days=None):
+def todays_watchlist(n=None, days=None, market_data=None):
     """Rank on closes through YESTERDAY. Slicing strictly before today also
-    drops the partial daily bar Yahoo serves while the session is live.
+    drops the partial daily bar Kite serves while the session is live.
 
     Returns (symbols, {symbol: turnover_cr}) so levels can be costed at each
     name's own slippage tier rather than a flat rate.
     """
-    daily = sc.fetch_daily(sc.load_universe(), days=days or sc.LOOKBACK_DAYS + 60)
+    daily = sc.fetch_daily(sc.load_universe(), days=days or sc.LOOKBACK_DAYS + 60,
+                           market_data=market_data)
     budget = ob.slot_budget()
     ranked = sc.screen_asof(daily, today_ist(), max_price=budget)
     if ranked.empty:
@@ -80,16 +81,16 @@ def levels(symbol, or_high, or_low, budget, turnover_cr=None, atr_pct=None):
     return rows
 
 
-def build(premarket=False):
+def build(premarket=False, market_data=None):
     day, n_or, budget = today_ist(), ob.or_candles(), ob.slot_budget()
-    syms, liq = todays_watchlist()
+    syms, liq = todays_watchlist(market_data=market_data)
     if not syms:
         return day, [], [], "screener returned nothing affordable"
 
     if premarket:
         return day, syms, [], None
 
-    intraday = ob.load_many(syms)
+    intraday = ob.load_many(syms, market_data=market_data)
     rows, pending = [], []
     for s in syms:
         df = intraday.get(s)

@@ -1,7 +1,7 @@
 name: ORB daily plan
 
-# GitHub-hosted runners have open internet, which the Claude cloud environment
-# does not, so the data fetch lives here.
+# GitHub-hosted runners have open internet. Kite Connect credentials must be
+# stored as repository secrets; its access token is a daily session credential.
 #
 # TIMING CAVEAT: scheduled workflows are queued, not guaranteed. Under load
 # GitHub can start a cron job 5-20 minutes late. The post-range run is
@@ -39,10 +39,12 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install yfinance pandas numpy
+        run: pip install -r requirements.txt
 
       - name: Verify the engine before trusting its numbers
-        run: python test_orb_backtest.py
+        run: |
+          python test_orb_backtest.py
+          python -m unittest test_kite_data.py
 
       - name: Pick mode from the cron that fired
         id: mode
@@ -58,6 +60,9 @@ jobs:
 
       - name: Run
         id: run
+        env:
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_ACCESS_TOKEN: ${{ secrets.KITE_ACCESS_TOKEN }}
         run: |
           set -o pipefail
           case "${{ steps.mode.outputs.mode }}" in

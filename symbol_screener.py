@@ -3,11 +3,11 @@ Daily symbol screener for intraday (ORB-style) trading.
 Ranks a universe of stocks by liquidity, volatility (ATR%), and momentum
 to produce a short daily watchlist.
 
-    pip install yfinance pandas numpy
+    pip install -r requirements.txt
     python symbol_screener.py
 
-Runs on daily data (fast, reliable on Yahoo). Point UNIVERSE_FILE at a symbol
-list to widen the pool; edit the weights/filters in CONFIG. Output: ranked table + watchlist.csv
+Runs on daily data from Kite Connect. Point UNIVERSE_FILE at a symbol list to
+widen the pool; edit the weights/filters in CONFIG. Output: ranked table + watchlist.csv
 
 Also importable. orb_backtest calls watchlist_asof() once per historical
 session to rebuild the watchlist as it would have looked that morning.
@@ -15,9 +15,9 @@ session to rebuild the watchlist as it would have looked that morning.
 
 import os
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
+from kite_data import KiteDataError, KiteMarketData
 
 # ------------------------- CONFIG -------------------------
 # The candidate POOL is just what gets fetched. Liquidity decides the tradeable
@@ -32,7 +32,7 @@ UNIVERSE_FILE = None       # e.g. "nifty500.csv" or "EQUITY_L.csv"
 DEFAULT_UNIVERSE = [
     "RELIANCE.NS","TCS.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","SBIN.NS",
     "BHARTIARTL.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","HINDUNILVR.NS",
-    "BAJFINANCE.NS","MARUTI.NS","TATAMOTORS.NS","SUNPHARMA.NS","TITAN.NS","WIPRO.NS",
+    "BAJFINANCE.NS","MARUTI.NS","TMPV.NS","SUNPHARMA.NS","TITAN.NS","WIPRO.NS",
     "ADANIENT.NS","TATASTEEL.NS","JSWSTEEL.NS","HCLTECH.NS","ONGC.NS","NTPC.NS",
     "POWERGRID.NS","COALINDIA.NS","M&M.NS","TECHM.NS","ULTRACEMCO.NS","HINDALCO.NS",
 ]
@@ -47,7 +47,6 @@ MIN_PRICE       = 50       # skip penny stocks
 # picked, so gross moves too; this is not a pure cost reduction.
 MIN_AVG_TURNOVER= 500e7    # min avg daily turnover in Rs (500 cr)
 TOP_N           = 10       # size of final watchlist
-CHUNK           = 100      # symbols per yfinance download call
 # ranking weights (must sum to ~1)
 W_ATR           = 0.45     # reward movement
 W_TURNOVER      = 0.25     # reward liquidity
@@ -80,33 +79,32 @@ def load_universe(path=None):
     return sorted(set(syms) - {""})
 
 
-def fetch_daily(universe=None, days=None):
-    """Download daily bars once. Returns {symbol: DataFrame indexed by date}.
+def fetch_daily(universe=None, days=None, market_data=None):
+    """Fetch daily Kite candles. Returns {symbol: DataFrame indexed by date}.
 
-    Chunked, because a pool of a few hundred symbols in one call is where
-    yfinance starts dropping tickers silently.
+    Kite's historical endpoint is one instrument per request. A failed request
+    aborts the screen instead of ranking a silently incomplete universe.
     """
     universe = universe or load_universe()
     days = days or LOOKBACK_DAYS + 20
-    out, failed = {}, 0
-    for i in range(0, len(universe), CHUNK):
-        batch = universe[i:i+CHUNK]
-        data = yf.download(batch, period=f"{days}d", interval="1d",
-                           group_by="ticker", progress=False)
-        if data.empty:
-            failed += len(batch)
+    market_data = market_data or KiteMarketData()
+    out, failures = {}, []
+    for sym in universe:
+        try:
+            df = market_data.daily(sym, days)
+        except KiteDataError as exc:
+            failures.append(str(exc))
             continue
-        for sym in batch:
-            try:
-                df = data[sym].dropna() if len(batch) > 1 else data.dropna()
-            except KeyError:
-                continue
-            if not df.empty:
-                out[sym] = df
+        if df.empty:
+            failures.append(f"Kite returned no daily candles for {sym}")
+            continue
+        out[sym] = df
+    if failures:
+        preview = "; ".join(failures[:3])
+        suffix = "" if len(failures) <= 3 else f"; and {len(failures)-3} more"
+        raise SystemExit(f"Refusing to screen a partial Kite universe: {preview}{suffix}")
     if not out:
-        raise SystemExit("No daily data returned. Check symbols / internet access.")
-    if len(universe) > CHUNK:
-        print(f"pool {len(universe)} symbols -> {len(out)} with usable history")
+        raise SystemExit("No Kite daily data returned. Check session token / internet access.")
     return out
 
 
