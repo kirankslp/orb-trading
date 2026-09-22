@@ -123,6 +123,10 @@ try:
     from kite_data import kite_client
     c = kite_client()
     p = c.profile()
+    # A request_token is single-use and short-lived. This process has just
+    # spent it, so hand the resulting session token to the backtest rather
+    # than letting it try the same exchange again and fail.
+    print('TOKEN ' + str(c.access_token))
     print('OK ' + str(p.get('user_name') or p.get('user_id') or ''))
 except Exception:
     traceback.print_exc(); sys.exit(1)
@@ -130,9 +134,32 @@ except Exception:
 $ErrorActionPreference = $prevEAP
 if ($LASTEXITCODE -ne 0) {
     Write-Host ' failed' -ForegroundColor Red
-    Fail ($check -join "`n")
+    $detail = ($check -join "`n")
+    if ($detail -match 'TokenException|Token is invalid') {
+        $detail += @"
+
+
+A request_token is SINGLE-USE and expires within minutes. A token that has
+already been exchanged, including by an earlier run of this script or by the
+web app, cannot be reused. Get a fresh one:
+  https://kite.zerodha.com/connect/login?v=3&api_key=$apiKey
+then rerun with -RequestToken <new token>.
+"@
+    }
+    Fail $detail
 }
-Write-Host " $check" -ForegroundColor Green
+
+# Carry the live session forward and retire the spent request_token. The token
+# is moved between processes by environment variable only: it is never echoed,
+# never written to the transcript, and never persisted.
+$token = ($check | Where-Object { $_ -match '^TOKEN ' } |
+          Select-Object -First 1) -replace '^TOKEN ', ''
+if ($token) {
+    $env:KITE_ACCESS_TOKEN = $token
+    $env:KITE_REQUEST_TOKEN = $null
+}
+$who = ($check | Where-Object { $_ -match '^OK ' } | Select-Object -First 1)
+Write-Host " $who" -ForegroundColor Green
 
 # --- run -------------------------------------------------------------------
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
