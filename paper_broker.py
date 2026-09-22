@@ -57,6 +57,15 @@ FROZEN_PARAMS = (
     "SEBI_PCT", "STAMP_BUY_PCT", "GST_PCT", "SLIPPAGE_TIERS",
 )
 
+# Selection is as much a part of the strategy as the entry rule: the universe
+# and the filters decide which trades can exist at all. Hashing only
+# orb_backtest would let the screener change silently while the fingerprint
+# stayed put, which is exactly the drift the freeze is meant to catch.
+FROZEN_SCREENER_PARAMS = (
+    "MIN_PRICE", "MIN_AVG_TURNOVER", "TOP_N", "LOOKBACK_DAYS", "ATR_PERIOD",
+    "W_ATR", "W_TURNOVER",
+)
+
 
 class PlanExists(Exception):
     """A plan for this date is already committed."""
@@ -68,10 +77,21 @@ class PlanMissing(Exception):
 
 def config_fingerprint():
     """Hash of the frozen strategy parameters, plus the values behind it."""
-    values = {}
-    for name in FROZEN_PARAMS:
-        v = getattr(ob, name)
-        values[name] = list(v) if isinstance(v, (tuple, list)) else v
+    import symbol_screener as sc
+
+    def _flat(v):
+        return list(v) if isinstance(v, (tuple, list)) else v
+
+    values = {n: _flat(getattr(ob, n)) for n in FROZEN_PARAMS}
+    for n in FROZEN_SCREENER_PARAMS:
+        if hasattr(sc, n):
+            values[f"sc.{n}"] = _flat(getattr(sc, n))
+    # The resolved universe, not just the filename: an edited EQUITY_L.csv or a
+    # changed ORB_UNIVERSE_FILE both alter which trades are possible.
+    universe = sc.load_universe()
+    values["sc.UNIVERSE_SIZE"] = len(universe)
+    values["sc.UNIVERSE_HASH"] = hashlib.sha256(
+        "\n".join(sorted(universe)).encode()).hexdigest()[:16]
     blob = json.dumps(values, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16], values
 
