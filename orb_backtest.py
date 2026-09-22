@@ -48,18 +48,24 @@ TARGET_PCT     = 0.008        # "pct" mode: target 0.8% from entry (2:1)
 DAY_BUDGET     = 100000       # TOTAL rupees working across all positions in a day
 LEVERAGE       = 1.0          # 1.0 = own cash. Intraday MIS runs ~5x at most
                               # brokers; it scales size and losses alike
-MAX_POSITIONS  = 20           # DAY_BUDGET splits across this many picks, and it
+MAX_POSITIONS  = 10           # DAY_BUDGET splits across this many picks, and it
                               # also sets how deep the screener ranking is taken.
                               # At Rs1L the Rs20 brokerage cap stops binding
                               # below Rs66,667/order, so every slot from Rs50,000
                               # down to Rs5,000 pays a flat 0.03% and net R:R is
                               # size-invariant at ~1.57 on a 2% ATR liquid name.
-                              # Going 2 -> 20 slots therefore costs nothing per
-                              # trade; what it buys is samples, and same-day
-                              # correlation means 10x the trades is only ~2-2.5x
-                              # the INDEPENDENT samples, not 10x.
-                              # Deeper ranking is the real trade-off: picks
-                              # 11-20 are the ones the screener liked least.
+                              # Slot count is therefore free per trade, and total
+                              # daily risk is ~1.2% of capital either way.
+                              #
+                              # 10 rather than 20 because the cost is elsewhere.
+                              # Whole-share rounding against a Rs5,000 slot left
+                              # ~8.5% of capital idle and put 29% of positions
+                              # under 5 shares, where an ATR-sized stop cannot be
+                              # expressed. A Rs10,000 slot deploys 94% with no
+                              # unaffordable names. Same-day correlation means
+                              # 20 trades is only ~1.2x the INDEPENDENT samples
+                              # of 10, so the sizing fidelity is worth more than
+                              # the extra count.
 # Whole shares only. Anything the per-slot budget cannot buy one of is skipped.
 
 # ---- costs: NSE intraday equity, Zerodha-style ----

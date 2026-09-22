@@ -27,7 +27,8 @@ Use `python daily_plan.py --premarket`, `python daily_plan.py`, or
 
 ## Paper trading
 
-A point-in-time forward test at Rs 1,00,000 across 20 slots. The strategy
+A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
+ranked out of NSE's full equity list. The strategy
 config is frozen for the run; see `FREEZE.md` for what that covers and why.
 
 ```bash

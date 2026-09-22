@@ -26,7 +26,16 @@ from kite_data import KiteDataError, KiteMarketData
 # pool beyond the large caps below; NSE publishes the full equity list as
 # EQUITY_L.csv, and any Nifty 500 constituent CSV works too. Symbols without a
 # suffix get ".NS" appended.
-UNIVERSE_FILE = None       # e.g. "nifty500.csv" or "EQUITY_L.csv"
+UNIVERSE_FILE = "EQUITY_L.csv"   # NSE's full equity list, shipped in this repo
+# The 30-name DEFAULT_UNIVERSE below is too small to rank against: at
+# MAX_POSITIONS=10 the screener would be picking a third of the eligible pool
+# every day, and at 20 it was picking most of it, so the ranking weights did
+# almost nothing. A 2565-name pool makes selection mean something again.
+#
+# Two costs come with it. Kite is one request per instrument at
+# REQUEST_PAUSE_SECONDS, so a full daily fetch is ~15 minutes per run. And a raw
+# exchange dump contains delisted, suspended and non-Kite scrips, so some
+# fetches always fail; see MAX_FETCH_FAILURE_PCT.
 
 # Fallback pool when no file is given. NSE F&O / large-cap names.
 DEFAULT_UNIVERSE = [
@@ -46,6 +55,10 @@ MIN_PRICE       = 50       # skip penny stocks
 # tradeable set in the 0.03%/0.05% tiers. It also changes WHICH symbols get
 # picked, so gross moves too; this is not a pure cost reduction.
 MIN_AVG_TURNOVER= 500e7    # min avg daily turnover in Rs (500 cr)
+# A raw NSE dump always carries delisted, suspended and non-Kite scrips, so some
+# daily fetches fail every run. Abort only past this share of the universe,
+# which distinguishes "dead scrips" from "dead session token". Always reported.
+MAX_FETCH_FAILURE_PCT = 0.15
 TOP_N           = 10       # size of final watchlist
 # ranking weights (must sum to ~1)
 W_ATR           = 0.45     # reward movement
@@ -107,7 +120,19 @@ def fetch_daily(universe=None, days=None, market_data=None):
     if failures:
         preview = "; ".join(failures[:3])
         suffix = "" if len(failures) <= 3 else f"; and {len(failures)-3} more"
-        raise SystemExit(f"Refusing to screen a partial Kite universe: {preview}{suffix}")
+        share = len(failures) / len(universe)
+        if share > MAX_FETCH_FAILURE_PCT:
+            raise SystemExit(
+                f"Refusing to screen a partial Kite universe: {len(failures)} of "
+                f"{len(universe)} symbols failed ({share*100:.1f}%, over the "
+                f"{MAX_FETCH_FAILURE_PCT*100:.0f}% tolerance). This is usually a "
+                f"dead session token or a network problem rather than dead "
+                f"scrips: {preview}{suffix}")
+        # Under the tolerance these are the delisted and suspended names any
+        # exchange dump carries. Reported rather than swallowed: "not silently
+        # incomplete" is the rule, not "never incomplete".
+        print(f"note: skipped {len(failures)} of {len(universe)} symbols with no "
+              f"Kite daily data ({share*100:.1f}%): {preview}{suffix}")
     if not out:
         raise SystemExit("No Kite daily data returned. Check session token / internet access.")
     return out

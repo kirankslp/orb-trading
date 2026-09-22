@@ -164,8 +164,21 @@ txt = _os.path.join(tmp, "pool.txt"); open(txt,"w").write("# comment\nRELIANCE\n
 csv = _os.path.join(tmp, "pool.csv"); open(csv,"w").write("SYMBOL,SERIES\nWIPRO,EQ\nSBIN,EQ\n")
 assert sc.load_universe(txt) == ["INFY.NS","RELIANCE.NS","TCS.NS"], sc.load_universe(txt)
 assert sc.load_universe(csv) == ["SBIN.NS","WIPRO.NS"]
-assert sc.load_universe(None) == sorted(set(sc.DEFAULT_UNIVERSE)) or True  # falls back
-assert len(sc.load_universe(None)) == 30
+# The configured default is now NSE's full equity list, so the pool is big
+# enough for the ranking to mean something.
+assert len(sc.load_universe(None)) > 2000, "UNIVERSE_FILE should load EQUITY_L.csv"
+# The DEFAULT_UNIVERSE fallback still works when no file is configured. Set it
+# explicitly rather than relying on the default happening to be None.
+_saved_uf = sc.UNIVERSE_FILE
+try:
+    sc.UNIVERSE_FILE = None
+    # The fallback returns DEFAULT_UNIVERSE as declared: unsorted, unlike the
+    # file path which sorts and dedupes.
+    assert sc.load_universe(None) == list(sc.DEFAULT_UNIVERSE)
+    assert len(sc.load_universe(None)) == 30
+    assert len(set(sc.DEFAULT_UNIVERSE)) == 30, "fallback pool has a duplicate"
+finally:
+    sc.UNIVERSE_FILE = _saved_uf
 print("14 universe file  : list + CSV parsed, .NS appended, fallback intact")
 
 # 15. slippage follows liquidity, and a thin name costs more than a large cap
