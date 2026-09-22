@@ -60,8 +60,13 @@ MIN_BARS = max(ATR_PERIOD + 1, LOOKBACK_DAYS + 1)
 
 
 def load_universe(path=None):
-    """Candidate pool: one symbol per line, or a CSV with a SYMBOL column."""
-    path = path or UNIVERSE_FILE
+    """Candidate pool: one symbol per line, or a CSV with a SYMBOL column.
+
+    ORB_UNIVERSE_FILE overrides UNIVERSE_FILE so a run can widen the pool
+    without editing the module. The universe decides which trades exist at all,
+    so it is part of the frozen config and paper_broker hashes it.
+    """
+    path = path or os.getenv("ORB_UNIVERSE_FILE") or UNIVERSE_FILE
     if not path:
         return list(DEFAULT_UNIVERSE)
     if not os.path.exists(path):

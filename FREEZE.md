@@ -18,9 +18,17 @@ file records what is frozen, why, and what is still allowed to change.
 | `MIN_AVG_TURNOVER` | ₹500 cr |
 
 `paper_broker.config_fingerprint()` hashes every parameter that changes what a
-trade is, including the whole cost model. Each committed plan stores that hash,
-and both `paper_broker.py status` and `paper_report.py` shout if more than one
-fingerprint shows up in the ledger. The freeze is therefore auditable rather
+trade is. That covers three groups:
+
+- the strategy and the whole cost model (`FROZEN_PARAMS`)
+- the screener's filters and ranking weights (`FROZEN_SCREENER_PARAMS`)
+- the **resolved universe itself**, hashed by contents rather than by filename,
+  so editing `EQUITY_L.csv` or setting `ORB_UNIVERSE_FILE` both move the hash
+
+Selection is as much a part of the strategy as the entry rule: the universe and
+the filters decide which trades can exist at all. Each committed plan stores the
+hash, and both `paper_broker.py status` and `paper_report.py` shout if more than
+one fingerprint shows up in the ledger. The freeze is therefore auditable rather
 than a promise.
 
 ## Why freeze at all
@@ -79,8 +87,11 @@ sooner than an edge estimate would.
 - Anything in `FROZEN_PARAMS` (`paper_broker.py`): budget, position count, stop
   and target sizing, range length, square-off, entry-bar policy, and the entire
   cost model
-- `MIN_AVG_TURNOVER`, the ranking weights, or `TOP_N` in `symbol_screener.py`
+- `MIN_AVG_TURNOVER`, the ranking weights, `TOP_N`, `MIN_PRICE`,
+  `LOOKBACK_DAYS` or `ATR_PERIOD` in `symbol_screener.py`
 - The screener's ranking logic
+- The universe: `UNIVERSE_FILE`, the `ORB_UNIVERSE_FILE` override, or the
+  contents of whatever file they point at
 
 If a parameter change looks warranted, write the hypothesis down, then test it
 against the **full Kite history** (which lifts Yahoo's 60-day cap, so years are

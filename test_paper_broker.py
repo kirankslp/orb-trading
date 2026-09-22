@@ -286,3 +286,64 @@ class TestEndToEnd(PaperDirCase):
             pb.resolve(DAY, market_data=md)
 
         pr.report(pb.read_ledger())      # must not raise on a real ledger
+
+
+class TestFingerprintCoversSelection(unittest.TestCase):
+    """Selection decides which trades can exist, so the freeze must cover it.
+
+    Before this, a screener edit left the fingerprint unchanged while FREEZE.md
+    claimed those parameters were frozen.
+    """
+
+    def test_liquidity_floor_is_frozen(self):
+        before, _ = pb.config_fingerprint()
+        saved = sc.MIN_AVG_TURNOVER
+        try:
+            sc.MIN_AVG_TURNOVER = saved / 10
+            self.assertNotEqual(before, pb.config_fingerprint()[0])
+        finally:
+            sc.MIN_AVG_TURNOVER = saved
+        self.assertEqual(before, pb.config_fingerprint()[0])
+
+    def test_ranking_weight_is_frozen(self):
+        before, _ = pb.config_fingerprint()
+        saved = sc.W_ATR
+        try:
+            sc.W_ATR = saved + 0.1
+            self.assertNotEqual(before, pb.config_fingerprint()[0])
+        finally:
+            sc.W_ATR = saved
+
+    def test_universe_contents_are_frozen(self):
+        """A different pool means different trades, even at the same size."""
+        before, _ = pb.config_fingerprint()
+        saved = sc.load_universe
+        try:
+            sc.load_universe = lambda *a, **k: ["ZZZZ.NS"]
+            self.assertNotEqual(before, pb.config_fingerprint()[0])
+        finally:
+            sc.load_universe = saved
+        self.assertEqual(before, pb.config_fingerprint()[0])
+
+    def test_universe_size_recorded(self):
+        _, values = pb.config_fingerprint()
+        self.assertIn("sc.UNIVERSE_SIZE", values)
+        self.assertIn("sc.MIN_AVG_TURNOVER", values)
+        self.assertGreater(values["sc.UNIVERSE_SIZE"], 0)
+
+
+class TestUniverseOverride(unittest.TestCase):
+    def test_env_var_overrides(self):
+        saved = os.environ.get("ORB_UNIVERSE_FILE")
+        try:
+            os.environ["ORB_UNIVERSE_FILE"] = "EQUITY_L.csv"
+            wide = sc.load_universe()
+            os.environ.pop("ORB_UNIVERSE_FILE")
+            narrow = sc.load_universe()
+            self.assertGreater(len(wide), len(narrow),
+                               "EQUITY_L.csv must widen the default 30-name pool")
+        finally:
+            if saved is None:
+                os.environ.pop("ORB_UNIVERSE_FILE", None)
+            else:
+                os.environ["ORB_UNIVERSE_FILE"] = saved
