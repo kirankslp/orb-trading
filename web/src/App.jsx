@@ -9,9 +9,24 @@ const signed = value => `${Number(value) > 0 ? '+' : ''}${Number(value || 0).toF
 const tickPrice = (value, tick = 0.05) => Number((Math.round(Number(value || 0) / tick) * tick).toFixed(4))
 
 async function api(path, options) {
-  const response = await fetch(path, options)
-  const body = await response.json()
-  if (!response.ok) throw Error(body.error || 'Request failed')
+  let response
+  try {
+    response = await fetch(path, options)
+  } catch {
+    throw Error('Cannot reach the local API on 127.0.0.1:8788.')
+  }
+  // The dev proxy answers with non-JSON when nothing is listening on 8788, so
+  // parse defensively rather than surfacing a JSON syntax error to the user.
+  const text = await response.text()
+  let body
+  try {
+    body = text ? JSON.parse(text) : {}
+  } catch {
+    throw Error(response.ok ? 'The local API returned a malformed response.' : `The local API is not reachable (HTTP ${response.status}).`)
+  }
+  // An empty body on a failed response means the dev proxy could not reach the
+  // API at all, which is a different problem from the API rejecting the call.
+  if (!response.ok) throw Error(body.error || (text ? `Request failed (HTTP ${response.status}).` : 'Cannot reach the local API on 127.0.0.1:8788. Is unified_api.py running?'))
   return body
 }
 
@@ -116,10 +131,32 @@ function Recommendations({ data, connected, refreshPrices, priceLoading, submitO
 }
 
 export default function App() {
-  const [config, setConfig] = useState(null), [token, setToken] = useState(''), [scan, setScan] = useState(emptyScan), [momentum, setMomentum] = useState({ rows: [], scan_date: null }), [execution, setExecution] = useState({ rows: [], scan_date: null }), [marketContext, setMarketContext] = useState(emptyContext), [budgetPlan, setBudgetPlan] = useState(emptyBudgetPlan), [recommendations, setRecommendations] = useState({ date: null, market_regime: 'Unavailable', recommendations: [] }), [plan, setPlan] = useState(null), [backtest, setBacktest] = useState(null), [tab, setTab] = useState('scanner'), [message, setMessage] = useState(''), [loading, setLoading] = useState(false)
+  const [config, setConfig] = useState(null), [token, setToken] = useState(''), [scan, setScan] = useState(emptyScan), [momentum, setMomentum] = useState({ rows: [], scan_date: null }), [execution, setExecution] = useState({ rows: [], scan_date: null }), [marketContext, setMarketContext] = useState(emptyContext), [budgetPlan, setBudgetPlan] = useState(emptyBudgetPlan), [recommendations, setRecommendations] = useState({ date: null, market_regime: 'Unavailable', recommendations: [] }), [plan, setPlan] = useState(null), [backtest, setBacktest] = useState(null), [tab, setTab] = useState('scanner'), [message, setMessage] = useState(''), [loading, setLoading] = useState(false), [configError, setConfigError] = useState(null), [retrying, setRetrying] = useState(false)
   const applyDashboard = dashboard => { setScan(dashboard.scan || emptyScan); setMomentum(dashboard.momentum || { rows: [] }); setExecution(dashboard.execution || { rows: [] }); setPlan(dashboard.orb_plan || null); setMarketContext(dashboard.market_context || emptyContext); setBudgetPlan(dashboard.budget_plan || emptyBudgetPlan); setRecommendations(dashboard.recommendations || { date: null, market_regime: 'Unavailable', recommendations: [] }) }
-  const load = async () => { try { const [settings, dashboard] = await Promise.all([api('/api/config'), api('/api/dashboard')]); setConfig(settings); applyDashboard(dashboard) } catch (error) { setMessage(`Start the local API: ${error.message}`) } }
-  useEffect(() => { load() }, [])
+  // Settled independently: a failing /api/dashboard must not take the Kite
+  // login URL down with it.
+  const load = async () => {
+    const [settings, dashboard] = await Promise.allSettled([api('/api/config'), api('/api/dashboard')])
+    if (settings.status === 'fulfilled') { setConfig(settings.value); setConfigError(null) } else setConfigError(settings.reason?.message || 'Request failed')
+    if (dashboard.status === 'fulfilled') applyDashboard(dashboard.value)
+    const failure = settings.reason || dashboard.reason
+    if (failure) setMessage(`Start the local API: ${failure.message}`)
+    return settings.status === 'fulfilled'
+  }
+  const retry = () => { setRetrying(true); load().finally(() => setRetrying(false)) }
+  // The launcher opens this page right after spawning the API, so the first
+  // /api/config can land before the server is listening. Back off and retry
+  // rather than leaving the session panel dead until a manual reload.
+  useEffect(() => {
+    let cancelled = false, timer
+    const attempt = async (delay, left) => {
+      if (cancelled) return
+      if (await load() || cancelled || left <= 0) return
+      timer = setTimeout(() => attempt(Math.min(delay * 2, 5000), left - 1), delay)
+    }
+    attempt(500, 12)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [])
   const work = async (label, fn) => { setLoading(true); setMessage(label); try { await fn(); setMessage('Done.') } catch (error) { setMessage(error.message) } finally { setLoading(false) } }
   const connect = event => { event.preventDefault(); work('Connecting your local Kite session…', async () => { const result = await api('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken: token }) }); setConfig(current => ({ ...current, connected: true, profile: result.profile })); setToken('') }) }
   const runScan = () => work('Scanning NIFTY 100 — about 40 seconds…', async () => { await api('/api/scan', { method: 'POST' }); applyDashboard(await api('/api/dashboard')) })
@@ -138,6 +175,6 @@ export default function App() {
   if (tab === 'budget') content = <IntradayBudgetPlan data={budgetPlan} calculate={calculateBudget} loading={loading}/>
   if (tab === 'recommendations') content = <Recommendations data={recommendations} connected={config?.connected} refreshPrices={refreshPrices} priceLoading={loading} submitOrder={submitOrder}/>
   return <main><header><div><p className="eyebrow">KITE CONNECT · LOCAL RESEARCH DESK</p><h1>One feed. One daily decision.</h1><span>SMA trend, momentum, ORB, global context, a cash-capped intraday plan, and one daily consensus.</span></div><button className="refresh-all" onClick={refreshAll} disabled={loading || !config?.connected}>{loading ? 'Refreshing…' : 'Refresh all strategies'}</button></header>
-    <form className="auth" onSubmit={connect}><div><p className="eyebrow">SESSION</p><h2>{config?.connected ? `Connected${config.profile?.user_name ? ` as ${config.profile.user_name}` : ''}` : 'Connect Kite'}</h2></div><div className="login"><a href={config?.login_url || '#'} target="_blank" rel="noreferrer">Open Kite login ↗</a><small>Sign in, then copy the one-time <code>request_token</code> from the redirect URL.</small></div><label>Kite refresh token <small>(Kite calls this a request token)</small></label><div className="token-row"><input value={token} onChange={event => setToken(event.target.value)} placeholder="Paste the fresh request_token" required/><button disabled={loading}>{config?.connected ? 'Renew session' : 'Connect'}</button></div><small>Sent only to the local API. The session remains in memory. Live orders require a separate reviewed and confirmed ticket.</small></form>
+    <form className="auth" onSubmit={connect}><div><p className="eyebrow">SESSION</p><h2>{config?.connected ? `Connected${config.profile?.user_name ? ` as ${config.profile.user_name}` : ''}` : 'Connect Kite'}</h2></div><div className="login">{config?.login_url ? <a href={config.login_url} target="_blank" rel="noreferrer">Open Kite login ↗</a> : <span className="login-disabled" aria-disabled="true">Open Kite login ↗</span>}{config?.login_url ? <small>Sign in, then copy the one-time <code>request_token</code> from the redirect URL.</small> : <><small className="login-error">{configError ? `Login URL unavailable. ${configError}` : 'Waiting for the local API on 127.0.0.1:8788…'}</small><button type="button" className="quiet" onClick={retry} disabled={retrying}>{retrying ? 'Retrying…' : 'Retry'}</button></>}</div><label>Kite refresh token <small>(Kite calls this a request token)</small></label><div className="token-row"><input value={token} onChange={event => setToken(event.target.value)} placeholder="Paste the fresh request_token" required/><button disabled={loading}>{config?.connected ? 'Renew session' : 'Connect'}</button></div><small>Sent only to the local API. The session remains in memory. Live orders require a separate reviewed and confirmed ticket.</small></form>
     {message && <output>{message}</output>}<nav><button className={tab === 'scanner' ? 'selected' : ''} onClick={() => setTab('scanner')}>NIFTY 100 scanner</button><button className={tab === 'orb' ? 'selected' : ''} onClick={() => setTab('orb')}>ORB workspace</button><button className={tab === 'momentum' ? 'selected' : ''} onClick={() => setTab('momentum')}>Momentum</button><button className={tab === 'execution' ? 'selected' : ''} onClick={() => setTab('execution')}>Execution & risk</button><button className={tab === 'global' ? 'selected' : ''} onClick={() => setTab('global')}>Global context</button><button className={tab === 'budget' ? 'selected' : ''} onClick={() => setTab('budget')}>Intraday budget plan</button><button className={tab === 'recommendations' ? 'selected' : ''} onClick={() => setTab('recommendations')}>Daily recommendations</button></nav>{content}</main>
 }
