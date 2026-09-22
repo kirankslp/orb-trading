@@ -15,6 +15,11 @@ MODE="${1:-plan}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
+# Reuse the local Kite app credentials without copying secrets into this repo.
+# Override this path on another machine. KITE_ACCESS_TOKEN must be supplied by
+# the environment (or held in this file) and is intentionally never persisted.
+export KITE_CREDENTIALS_FILE="${KITE_CREDENTIALS_FILE:-$REPO/../zerodha-arth/creds.txt}"
+
 PY="${ORB_PYTHON:-$REPO/.venv/bin/python}"
 [ -x "$PY" ] || PY="$(command -v python3 || true)"
 if [ -z "$PY" ]; then

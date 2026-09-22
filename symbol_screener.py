@@ -3,27 +3,36 @@ Daily symbol screener for intraday (ORB-style) trading.
 Ranks a universe of stocks by liquidity, volatility (ATR%), and momentum
 to produce a short daily watchlist.
 
-    pip install yfinance pandas numpy
+    pip install -r requirements.txt
     python symbol_screener.py
 
-Runs on daily data (fast, reliable on Yahoo). Edit UNIVERSE and the
-weights/filters in CONFIG. Output: ranked table + watchlist.csv
+Runs on daily data from Kite Connect. Point UNIVERSE_FILE at a symbol list to
+widen the pool; edit the weights/filters in CONFIG. Output: ranked table + watchlist.csv
 
 Also importable. orb_backtest calls watchlist_asof() once per historical
 session to rebuild the watchlist as it would have looked that morning.
 """
 
-import yfinance as yf
+import os
+
 import pandas as pd
 import numpy as np
+from kite_data import KiteDataError, KiteMarketData
 
 # ------------------------- CONFIG -------------------------
-# Start with a liquid universe. These are NSE F&O / large-cap names.
-# Add ".NS" suffix for NSE. Replace with your own list any time.
-UNIVERSE = [
+# The candidate POOL is just what gets fetched. Liquidity decides the tradeable
+# universe, per day, from bars available before that morning. Point a file at
+# UNIVERSE_FILE (one symbol per line, or a CSV with a SYMBOL column) to widen the
+# pool beyond the large caps below; NSE publishes the full equity list as
+# EQUITY_L.csv, and any Nifty 500 constituent CSV works too. Symbols without a
+# suffix get ".NS" appended.
+UNIVERSE_FILE = None       # e.g. "nifty500.csv" or "EQUITY_L.csv"
+
+# Fallback pool when no file is given. NSE F&O / large-cap names.
+DEFAULT_UNIVERSE = [
     "RELIANCE.NS","TCS.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","SBIN.NS",
     "BHARTIARTL.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","HINDUNILVR.NS",
-    "BAJFINANCE.NS","MARUTI.NS","TATAMOTORS.NS","SUNPHARMA.NS","TITAN.NS","WIPRO.NS",
+    "BAJFINANCE.NS","MARUTI.NS","TMPV.NS","SUNPHARMA.NS","TITAN.NS","WIPRO.NS",
     "ADANIENT.NS","TATASTEEL.NS","JSWSTEEL.NS","HCLTECH.NS","ONGC.NS","NTPC.NS",
     "POWERGRID.NS","COALINDIA.NS","M&M.NS","TECHM.NS","ULTRACEMCO.NS","HINDALCO.NS",
 ]
@@ -31,7 +40,12 @@ UNIVERSE = [
 LOOKBACK_DAYS   = 30       # window for ATR / avg volume / momentum
 ATR_PERIOD      = 14
 MIN_PRICE       = 50       # skip penny stocks
-MIN_AVG_TURNOVER= 50e7     # min avg daily turnover in Rs (50 cr) -> liquidity floor
+# Liquidity floor, and the main lever on cost. At 50 cr the screener's ATR
+# weighting pulled picks into the 0.10%/0.20% slippage tiers, where friction ran
+# 0.233% round trip against a gross edge of 0.166%. A 500 cr floor keeps the
+# tradeable set in the 0.03%/0.05% tiers. It also changes WHICH symbols get
+# picked, so gross moves too; this is not a pure cost reduction.
+MIN_AVG_TURNOVER= 500e7    # min avg daily turnover in Rs (500 cr)
 TOP_N           = 10       # size of final watchlist
 # ranking weights (must sum to ~1)
 W_ATR           = 0.45     # reward movement
@@ -45,22 +59,52 @@ W_MOMENTUM      = 0.30     # reward directional strength
 MIN_BARS = max(ATR_PERIOD + 1, LOOKBACK_DAYS + 1)
 
 
-def fetch_daily(universe=None, days=None):
-    """Download daily bars once. Returns {symbol: DataFrame indexed by date}."""
-    universe = universe or UNIVERSE
+def load_universe(path=None):
+    """Candidate pool: one symbol per line, or a CSV with a SYMBOL column."""
+    path = path or UNIVERSE_FILE
+    if not path:
+        return list(DEFAULT_UNIVERSE)
+    if not os.path.exists(path):
+        raise SystemExit(f"UNIVERSE_FILE {path!r} not found")
+    if path.lower().endswith(".csv"):
+        df = pd.read_csv(path)
+        col = next((c for c in df.columns if c.strip().upper() == "SYMBOL"), df.columns[0])
+        syms = df[col].astype(str)
+    else:
+        with open(path) as f:
+            syms = pd.Series([ln.strip() for ln in f if ln.strip()
+                              and not ln.startswith("#")])
+    syms = (syms.str.strip().str.upper()
+                .map(lambda s: s if "." in s else s + ".NS"))
+    return sorted(set(syms) - {""})
+
+
+def fetch_daily(universe=None, days=None, market_data=None):
+    """Fetch daily Kite candles. Returns {symbol: DataFrame indexed by date}.
+
+    Kite's historical endpoint is one instrument per request. A failed request
+    aborts the screen instead of ranking a silently incomplete universe.
+    """
+    universe = universe or load_universe()
     days = days or LOOKBACK_DAYS + 20
-    data = yf.download(universe, period=f"{days}d", interval="1d",
-                       group_by="ticker", progress=False)
-    if data.empty:
-        raise SystemExit("No daily data returned. Check symbols / internet access.")
-    out = {}
+    market_data = market_data or KiteMarketData()
+    out, failures = {}, []
     for sym in universe:
         try:
-            df = data[sym].dropna()
-        except KeyError:
+            df = market_data.daily(sym, days)
+        except KiteDataError as exc:
+            failures.append(str(exc))
             continue
-        if not df.empty:
-            out[sym] = df
+        if df.empty:
+            failures.append(f"Kite returned no daily candles for {sym}")
+            continue
+        out[sym] = df
+    if failures:
+        preview = "; ".join(failures[:3])
+        suffix = "" if len(failures) <= 3 else f"; and {len(failures)-3} more"
+        raise SystemExit(f"Refusing to screen a partial Kite universe: {preview}{suffix}")
+    if not out:
+        raise SystemExit("No Kite daily data returned. Check session token / internet access.")
     return out
 
 

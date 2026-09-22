@@ -27,36 +27,60 @@ import symbol_screener as sc
 
 CACHE = "sweep_cache.pkl"
 
-# (target, stop). Held at 2:1 so the sweep isolates SIZE from ratio; the last two
-# widen the ratio as well, to see whether the stop or the target is the problem.
+# (target, stop) as fixed fractions, used when STOP_MODE == "pct". Held at 2:1
+# so the sweep isolates SIZE from ratio; the last three widen the ratio too, to
+# see whether the stop or the target is the problem.
 GRID = [(0.008, 0.004), (0.012, 0.006), (0.016, 0.008), (0.020, 0.010),
         (0.030, 0.015), (0.012, 0.008), (0.016, 0.010), (0.024, 0.012)]
 
+# (target, stop) as ATR MULTIPLES, used when STOP_MODE == "atr". Same shape, but
+# each symbol converts these to its own percentage.
+ATR_GRID = [(1.0, 0.5), (1.5, 0.75), (2.0, 1.0), (3.0, 1.5),
+            (1.5, 1.0), (2.0, 1.25), (4.0, 2.0), (0.6, 0.3)]
+
+# --wide: does gross keep climbing, or does it flatten as everything turns into
+# a hold-to-squareoff? The answer decides whether widening is an edge or just a
+# slower way of running the clock out.
+WIDE = [(0.008, 0.004), (0.020, 0.010), (0.030, 0.015), (0.040, 0.020),
+        (0.050, 0.025), (0.060, 0.030), (0.080, 0.040)]
+
 
 def build_cache(slots):
-    daily = sc.fetch_daily(sc.UNIVERSE, days=sc.LOOKBACK_DAYS + 120)
+    pool = sc.load_universe()
+    daily = ob.fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(ob.PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]
 
     budget = ob.DAY_BUDGET * ob.LEVERAGE / slots
-    picks = {d: sc.watchlist_asof(daily, d, slots, max_price=budget) for d in sessions}
-    picks = {d: p for d, p in picks.items() if p}
+    picks, metrics = {}, {}
+    for d in sessions:
+        ranked = sc.screen_asof(daily, d, max_price=budget)
+        if ranked.empty:
+            continue
+        top = ranked.head(slots)
+        picks[d] = top.symbol.tolist()
+        for r in top.itertuples():
+            metrics[(d, r.symbol)] = dict(atr_pct=r.atr_pct, turnover_cr=r.turnover_cr)
     if not picks:
         raise SystemExit("screener returned no picks")
 
     needed = sorted({s for p in picks.values() for s in p})
-    print(f"{len(sessions)} sessions | {len(needed)} symbols | fetching intraday...")
+
+    print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} symbols "
+          f"| fetching intraday...")
     intraday = ob.load_many(needed)
-    return dict(picks=picks, intraday=intraday, slots=slots,
-                day_budget=ob.DAY_BUDGET, built=datetime.datetime.now())
+    return dict(picks=picks, intraday=intraday, metrics=metrics, slots=slots,
+                pool=len(pool), day_budget=ob.DAY_BUDGET,
+                built=datetime.datetime.now())
 
 
 def load_cache(slots, refetch):
     if not refetch and os.path.exists(CACHE):
         with open(CACHE, "rb") as f:
             c = pickle.load(f)
-        stale = c["slots"] != slots or c["day_budget"] != ob.DAY_BUDGET
+        stale = (c["slots"] != slots or c["day_budget"] != ob.DAY_BUDGET
+                 or "metrics" not in c)   # pre-ATR caches carry no per-day metrics
         if not stale:
             age = datetime.datetime.now() - c["built"]
             print(f"using {CACHE} built {age.days}d {age.seconds//3600}h ago "
@@ -70,50 +94,103 @@ def load_cache(slots, refetch):
 
 
 def run(cache, tgt, sl):
-    ob.TARGET_PCT, ob.SL_PCT, ob.MAX_POSITIONS = tgt, sl, cache["slots"]
-    tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"])
+    ob.MAX_POSITIONS = cache["slots"]
+    if ob.STOP_MODE == "atr":
+        ob.ATR_TARGET_MULT, ob.ATR_STOP_MULT = tgt, sl
+    else:
+        ob.TARGET_PCT, ob.SL_PCT = tgt, sl
+    tr, _ = ob.backtest_watchlist(cache["intraday"], cache["picks"],
+                                  cache.get("metrics"))
     if tr.empty:
-        return None
+        return None, None
     n = len(tr)
     daily = tr.groupby("date").pnl.sum().sort_index()
     reasons = tr.reason.value_counts()
     # SE of mean net per trade: how much of this is signal vs 40 sessions of luck
     se = tr.pnl.std(ddof=1) / np.sqrt(n)
     return dict(
-        tgt=tgt*100, sl=sl*100, rr=tgt/sl, n=n,
+        tgt=tgt*(1 if ob.STOP_MODE == "atr" else 100),
+        sl=sl*(1 if ob.STOP_MODE == "atr" else 100), rr=tgt/sl, n=n,
         win=(tr.pnl > 0).mean()*100,
         gross=tr.gross.sum(), cost=tr.cost.sum(), net=tr.pnl.sum(),
         per_trade=tr.pnl.mean(), se=se,
         gross_pt=tr.gross.mean(),
         dd=(daily.cumsum() - daily.cumsum().cummax()).min(),
+        sqoff=int(reasons.get("squareoff", 0)) + int(reasons.get("eod", 0)),
         tgt_hits=int(reasons.get("target", 0)),
         stops=int(reasons.get("stoploss", 0)),
-    )
+    ), tr
+
+
+def paired(base, tr):
+    """Gross difference per trade against the baseline config.
+
+    Entries are identical across the grid (picks, opening ranges and breakout
+    detection do not depend on stop or target), so this is a paired measurement.
+    Its standard error is much smaller than the SE of either config's level,
+    which is what makes a real improvement visible in ~40 sessions.
+    """
+    k = ["date", "symbol"]
+    a, b = base.set_index(k).gross, tr.set_index(k).gross
+    common = a.index.intersection(b.index)
+    if len(common) < 2:
+        return np.nan, np.nan
+    d = b.loc[common] - a.loc[common]
+    return d.mean(), d.std(ddof=1) / np.sqrt(len(d))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--refetch", action="store_true")
     ap.add_argument("--slots", type=int, default=ob.MAX_POSITIONS)
+    ap.add_argument("--wide", action="store_true",
+                    help="push the target out until the strategy is just a hold")
     a = ap.parse_args()
 
     cache = load_cache(a.slots, a.refetch)
-    rows = [r for t, s in GRID if (r := run(cache, t, s))]
+    atr = ob.STOP_MODE == "atr"
+    grid = (WIDE if a.wide else ATR_GRID if atr else GRID)
+    if atr and a.wide:
+        grid = [(t*2, s*2) for t, s in ATR_GRID[:1]] + \
+               [(m, m/2) for m in (2.0, 3.0, 4.0, 6.0, 8.0, 12.0)]
+    unit = "xATR" if atr else "%"
+
+    rows, base = [], None
+    for t, s in grid:
+        r, tr = run(cache, t, s)
+        if not r:
+            continue
+        if base is None:
+            base = tr
+        r["dgross"], r["dse"] = paired(base, tr)
+        rows.append(r)
     d = pd.DataFrame(rows)
 
-    print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | "
-          f"cost model {ob.SLIPPAGE_PCT*100:.3f}%/leg slippage")
-    print("="*104)
+    met = cache.get("metrics") or {}
+    tiers = (sorted({ob.slippage_for(m.get("turnover_cr")) for m in met.values()})
+             if met else [ob.SLIPPAGE_PCT])
+    print(f"\nDAY_BUDGET Rs {ob.DAY_BUDGET:,.0f} over {a.slots} slot(s) | pool "
+          f"{cache.get('pool', '?')} | slippage tiers in use: "
+          f"{', '.join(f'{t*100:.2f}%' for t in tiers)}/leg")
+    scale = 1 if atr else 100
+    print(f"levels in {unit} | vs-base compares against "
+          f"{grid[0][0]*scale:g}/{grid[0][1]*scale:g} on identical entries (paired)")
+    print("="*118)
     show = d.copy()
     show["net/trade"] = show.per_trade.round(1).astype(str) + " +-" + show.se.round(1).astype(str)
     show["gross/trade"] = show.gross_pt.round(1)
+    # paired t on the gross improvement: |mean| / SE above ~2 is hard to dismiss
+    show["vs base"] = show.dgross.round(1).astype(str) + " +-" + show.dse.round(1).astype(str)
+    show["t"] = (show.dgross / show.dse).round(1)
+    show["exits t/s/sq"] = (show.tgt_hits.astype(str) + "/" + show.stops.astype(str)
+                            + "/" + show.sqoff.astype(str))
     show = show[["tgt","sl","rr","n","win","gross","cost","net","gross/trade",
-                 "net/trade","dd","tgt_hits","stops"]]
+                 "net/trade","vs base","t","dd","exits t/s/sq"]]
     print(show.to_string(index=False, float_format=lambda v: f"{v:,.1f}"))
-    print("="*104)
+    print("="*118)
 
     best = d.loc[d.net.idxmax()]
-    print(f"\nBest net: {best.tgt:.1f}%/{best.sl:.2f}% -> Rs {best.net:,.0f} "
+    print(f"\nBest net: {best.tgt:g}/{best.sl:g} {unit} -> Rs {best.net:,.0f} "
           f"over {best.n:.0f} trades")
     print(f"  gross/trade Rs {best.gross_pt:.1f}, cost/trade "
           f"Rs {best.cost/best.n:.1f}, net/trade Rs {best.per_trade:.1f} "
@@ -128,8 +205,20 @@ def main():
                "gross edge may cover costs at the optimistic end; worth more data")
     print(f"\n  gross/trade 95% upper bound Rs {hi:.1f} vs cost/trade "
           f"Rs {cost_pt:.1f}\n  -> {verdict}")
-    print("\n~40 sessions is a small sample. Treat a single positive cell as "
-          "noise unless net/trade clears about 2 SE.")
+
+    # Probability the true gross edge clears costs, treating the estimate as
+    # normal. Blunt, but more useful than eyeballing an interval.
+    from math import erf, sqrt
+    z = (cost_pt - best.gross_pt) / best.se if best.se else float("inf")
+    p = 0.5 * (1 - erf(z / sqrt(2)))
+    print(f"  P(true gross/trade > cost/trade) ~ {p*100:.0f}%")
+
+    print(f"\nThis was the best of {len(d)} configs, so its estimate is biased "
+          "upward by\nthe selection itself. The 'vs base' column is the honest "
+          "one: it is paired,\nso it measures whether widening actually changed "
+          "anything on the same trades.")
+    print("~40 sessions is a small sample. A single positive cell is noise "
+          "unless it clears about 2 SE.")
 
 
 if __name__ == "__main__":

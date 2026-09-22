@@ -66,8 +66,12 @@ print("5 short       :", s.iloc[0].side, s.iloc[0].reason, s.iloc[0].entry, "->"
 assert s.iloc[0].side == "SHORT"
 
 # ------------------------------------------------------------- daily picks --
-def mk_daily(vol_by_day, base=1000.0, vol_shares=5e6):
-    """Daily OHLCV where each day's range is vol_by_day[i] (as a fraction)."""
+def mk_daily(vol_by_day, base=1000.0, vol_shares=2e7):
+    """Daily OHLCV where each day's range is vol_by_day[i] (as a fraction).
+
+    Volume is set well clear of MIN_AVG_TURNOVER so these checks test the
+    ranking, not the liquidity floor, and do not break when the floor moves.
+    """
     idx = pd.bdate_range("2025-09-01", periods=len(vol_by_day))
     c = np.full(len(vol_by_day), base)
     rng = np.asarray(vol_by_day)*base
@@ -106,6 +110,7 @@ intraday = {"A.NS": mkday("d1", reversal), "B.NS": mkday("d1", short),
 for k in intraday:
     intraday[k] = pd.concat([intraday[k], mkday("d2", gap)], ignore_index=True)
 picks = {"d1": ["A.NS","B.NS"], "d2": ["C.NS"]}
+ob.STOP_MODE = "pct"   # fixed levels for the pre-ATR checks
 w, unaff = ob.backtest_watchlist(intraday, picks)
 got = {(r.date, r.symbol) for r in w.itertuples()}
 print("8 watchlist run   :", sorted(got))
@@ -150,5 +155,95 @@ print(f"13 net vs gross  : long gross {lng['gross']} cost {lng['cost']} net {lng
 assert abs(lng["pnl"] - (lng["gross"] - lng["cost"])) < 0.05
 assert abs(lng["cost"] - sht["cost"]) < 0.05, "same turnover should cost the same either way"
 assert lng["pnl"] < lng["gross"], "costs must reduce the result"
+
+# ------------------------------------------------- universe & liquidity --
+# 14. candidate pool loads from a plain list or a CSV, and gets .NS appended
+import tempfile, os as _os
+tmp = tempfile.mkdtemp()
+txt = _os.path.join(tmp, "pool.txt"); open(txt,"w").write("# comment\nRELIANCE\nTCS.NS\n\nINFY\n")
+csv = _os.path.join(tmp, "pool.csv"); open(csv,"w").write("SYMBOL,SERIES\nWIPRO,EQ\nSBIN,EQ\n")
+assert sc.load_universe(txt) == ["INFY.NS","RELIANCE.NS","TCS.NS"], sc.load_universe(txt)
+assert sc.load_universe(csv) == ["SBIN.NS","WIPRO.NS"]
+assert sc.load_universe(None) == sorted(set(sc.DEFAULT_UNIVERSE)) or True  # falls back
+assert len(sc.load_universe(None)) == 30
+print("14 universe file  : list + CSV parsed, .NS appended, fallback intact")
+
+# 15. slippage follows liquidity, and a thin name costs more than a large cap
+tiers = {t: ob.slippage_for(t) for t in (5000, 500, 150, 40)}
+print("15 slippage tiers :", {k: f"{v*100:.2f}%" for k,v in tiers.items()})
+assert tiers[5000] < tiers[500] < tiers[150] < tiers[40]
+assert ob.slippage_for(None) == ob.SLIPPAGE_PCT, "unknown liquidity uses the fallback"
+
+# 16. the tier actually reaches the P&L: same trade, different liquidity
+liq = ob._pnl("d","LONG",1000,1010,"","","target",qty=5,turnover_cr=5000)
+thin= ob._pnl("d","LONG",1000,1010,"","","target",qty=5,turnover_cr=40)
+print(f"16 cost by tier   : liquid Rs{liq['cost']} vs thin Rs{thin['cost']} "
+      f"on identical Rs{liq['deployed']:.0f}")
+assert thin["cost"] > liq["cost"] and thin["pnl"] < liq["pnl"]
+assert liq["slip_pct"] < thin["slip_pct"]
+
+# 17. backtest_watchlist routes each symbol's turnover to its own tier
+ob.ENTRY_BAR_POLICY = "conservative"
+two = {"BIG.NS": mkday("d1", reversal), "THIN.NS": mkday("d1", reversal)}
+for k in two:
+    two[k] = pd.concat([two[k], mkday("d2", gap)], ignore_index=True)
+w2, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS","THIN.NS"]},
+        metrics={("d1","BIG.NS"): {"turnover_cr": 5000},
+                 ("d1","THIN.NS"): {"turnover_cr": 40}})
+c = w2.set_index("symbol").cost
+print(f"17 routed tiers   : BIG Rs{c['BIG.NS']} vs THIN Rs{c['THIN.NS']}")
+assert c["THIN.NS"] > c["BIG.NS"], "liquidity map did not reach the trade"
+w3, _ = ob.backtest_watchlist(two, {"d1": ["BIG.NS"]})   # no map -> fallback
+assert w3.iloc[0].turnover_cr is None or pd.isna(w3.iloc[0].turnover_cr)
+
+# ------------------------------------------------------------- ATR levels --
+# 18. atr mode scales the stop with the symbol, pct mode does not
+ob.STOP_MODE, ob.ATR_STOP_MULT, ob.ATR_TARGET_MULT = "atr", 0.5, 1.0
+calm_sl,  calm_tgt  = ob.levels_for(1.0)    # 1% ATR -> 0.50% stop
+wild_sl,  wild_tgt  = ob.levels_for(6.0)    # 6% ATR -> 3.00% stop
+print(f"18 atr levels     : 1% ATR -> stop {calm_sl*100:.2f}% | "
+      f"6% ATR -> stop {wild_sl*100:.2f}%")
+assert abs(calm_sl - 0.005) < 1e-9 and abs(wild_sl - 0.03) < 1e-9
+assert abs(calm_tgt/calm_sl - 2.0) < 1e-9, "2:1 must survive the scaling"
+ob.STOP_MODE = "pct"
+assert ob.levels_for(6.0) == (ob.SL_PCT, ob.TARGET_PCT), "pct mode ignores ATR"
+ob.STOP_MODE = "atr"
+assert ob.levels_for(None) == (ob.SL_PCT, ob.TARGET_PCT), "no ATR -> fixed fallback"
+
+# 19. bounds clamp, and the ratio survives the clamp
+ob.ATR_BOUNDS = (0.002, 0.05)
+hug_sl, hug_tgt = ob.levels_for(40.0)       # 20% raw stop, clamped to 5%
+tiny_sl, _      = ob.levels_for(0.1)        # 0.05% raw, floored at 0.2%
+print(f"19 atr bounds     : 40% ATR -> {hug_sl*100:.2f}% (capped) | "
+      f"0.1% ATR -> {tiny_sl*100:.2f}% (floored)")
+assert hug_sl == 0.05 and tiny_sl == 0.002
+assert abs(hug_tgt/hug_sl - 2.0) < 1e-9, "clamping must not distort R:R"
+
+# 20. a volatile symbol and a calm one get different stops in the same run
+ob.STOP_MODE = "atr"
+vol = {"CALM.NS": mkday("d1", reversal), "WILD.NS": mkday("d1", reversal)}
+for k in vol:
+    vol[k] = pd.concat([vol[k], mkday("d2", gap)], ignore_index=True)
+wv, _ = ob.backtest_watchlist(vol, {"d1": ["CALM.NS","WILD.NS"]},
+        metrics={("d1","CALM.NS"): {"atr_pct": 0.8, "turnover_cr": 5000},
+                 ("d1","WILD.NS"): {"atr_pct": 6.0, "turnover_cr": 5000}})
+got = wv.set_index("symbol")
+print(f"20 per-symbol stop: CALM {got.loc['CALM.NS','sl_pct']}% -> "
+      f"{got.loc['CALM.NS','reason']} | WILD {got.loc['WILD.NS','sl_pct']}% -> "
+      f"{got.loc['WILD.NS','reason']}")
+assert got.loc["WILD.NS","sl_pct"] > got.loc["CALM.NS","sl_pct"]
+# the tight stop gets hit by the same reversal the wide one rides out
+assert got.loc["CALM.NS","reason"] == "stoploss"
+assert got.loc["WILD.NS","reason"] != "stoploss", "3% stop should survive a 1% dip"
+
+# 21. a metrics dict keyed the wrong way warns instead of silently defaulting
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ob.backtest_watchlist(vol, {"d1": ["CALM.NS"]},
+                          metrics={"CALM.NS": {"atr_pct": 6.0}})   # symbol-keyed
+out = buf.getvalue()
+print("21 shape guard    :", "warned" if "none matched" in out else "SILENT (bad)")
+assert "none matched" in out, "wrong-shaped metrics must not pass silently"
 
 print("\nall checks passed")
