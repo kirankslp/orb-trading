@@ -25,12 +25,22 @@ def today_ist():
     return pd.Timestamp.now(tz=IST).date()
 
 
-def todays_watchlist(n=None, days=None):
+def todays_watchlist(n=None, days=None, market_data=None):
     """Rank on closes through YESTERDAY. Slicing strictly before today also
-    drops the partial daily bar Yahoo serves while the session is live."""
-    daily = sc.fetch_daily(sc.UNIVERSE, days=days or sc.LOOKBACK_DAYS + 60)
-    return sc.watchlist_asof(daily, today_ist(), n or ob.MAX_POSITIONS,
-                             max_price=ob.slot_budget())
+    drops the partial daily bar Kite serves while the session is live.
+
+    Returns (symbols, {symbol: turnover_cr}) so levels can be costed at each
+    name's own slippage tier rather than a flat rate.
+    """
+    daily = sc.fetch_daily(sc.load_universe(), days=days or sc.LOOKBACK_DAYS + 60,
+                           market_data=market_data)
+    budget = ob.slot_budget()
+    ranked = sc.screen_asof(daily, today_ist(), max_price=budget)
+    if ranked.empty:
+        return [], {}
+    syms = ranked.symbol.head(n or ob.MAX_POSITIONS).tolist()
+    return syms, {r.symbol: dict(turnover_cr=r.turnover_cr, atr_pct=r.atr_pct)
+                  for r in ranked.itertuples()}
 
 
 def opening_range(df, day, n_or):
@@ -42,39 +52,45 @@ def opening_range(df, day, n_or):
     return float(b["High"].max()), float(b["Low"].min()), g.iloc[n_or-1]["time"]
 
 
-def levels(symbol, or_high, or_low, budget):
-    """Both sides of the breakout as placeable stop orders."""
+def levels(symbol, or_high, or_low, budget, turnover_cr=None, atr_pct=None):
+    """Both sides of the breakout as placeable stop orders.
+
+    Stop and target distances come from the symbol's own ATR in atr mode, so a
+    volatile name gets a wider stop rather than one sized for a large cap.
+    """
+    sl_pct, tgt_pct = ob.levels_for(atr_pct)
     rows = []
     for side, trig in (("LONG", or_high), ("SHORT", or_low)):
         qty = int(budget // trig)
         if qty == 0:
             continue
         sign = 1 if side == "LONG" else -1
-        sl  = trig * (1 - sign*ob.SL_PCT)
-        tgt = trig * (1 + sign*ob.TARGET_PCT)
+        sl  = trig * (1 - sign*sl_pct)
+        tgt = trig * (1 + sign*tgt_pct)
         # net of charges + slippage, same accounting the backtest uses, so these
         # are what actually lands in the account rather than the raw stop distance
         cost = (ob.charges(trig*qty, sl*qty)
-                + (trig*qty + sl*qty) * ob.SLIPPAGE_PCT)
+                + (trig*qty + sl*qty) * ob.slippage_for(turnover_cr))
         risk, reward = abs(trig-sl)*qty + cost, abs(tgt-trig)*qty - cost
         rows.append(dict(symbol=symbol, side=side, trigger=round(trig,2),
                          stop=round(sl,2), target=round(tgt,2), qty=qty,
+                         sl_pct=round(sl_pct*100,2),
                          deploy=round(trig*qty), cost=round(cost,1),
                          risk=round(risk,1), reward=round(reward,1),
                          rr=round(reward/risk,2) if risk else None))
     return rows
 
 
-def build(premarket=False):
+def build(premarket=False, market_data=None):
     day, n_or, budget = today_ist(), ob.or_candles(), ob.slot_budget()
-    syms = todays_watchlist()
+    syms, liq = todays_watchlist(market_data=market_data)
     if not syms:
         return day, [], [], "screener returned nothing affordable"
 
     if premarket:
         return day, syms, [], None
 
-    intraday = ob.load_many(syms)
+    intraday = ob.load_many(syms, market_data=market_data)
     rows, pending = [], []
     for s in syms:
         df = intraday.get(s)
@@ -86,7 +102,9 @@ def build(premarket=False):
             pending.append(f"{s}: range still forming, need {n_or} candles")
             continue
         hi, lo, done_at = r
-        rows.extend(levels(s, hi, lo, budget))
+        m = liq.get(s) or {}
+        rows.extend(levels(s, hi, lo, budget, m.get('turnover_cr'),
+                           m.get('atr_pct')))
     return day, syms, rows, "; ".join(pending) if pending else None
 
 
@@ -102,8 +120,10 @@ def main():
     print("="*74)
     print(f"ORB PLAN {day}   budget Rs {ob.DAY_BUDGET:,.0f} x {ob.LEVERAGE:g} "
           f"over {ob.MAX_POSITIONS} slots = Rs {budget:,.0f}/position")
-    print(f"range {ob.OR_MINUTES}m | stop {ob.SL_PCT*100:.2f}% | "
-          f"target {ob.TARGET_PCT*100:.2f}% | square off {ob.SQUAREOFF_TIME}")
+    lvl = (f"stops {ob.ATR_STOP_MULT:g}x ATR / targets {ob.ATR_TARGET_MULT:g}x ATR"
+           if ob.STOP_MODE == "atr" else
+           f"stop {ob.SL_PCT*100:.2f}% / target {ob.TARGET_PCT*100:.2f}%")
+    print(f"range {ob.OR_MINUTES}m | {lvl} | square off {ob.SQUAREOFF_TIME}")
     print("="*74)
     print("Watchlist:", ", ".join(syms) if syms else "(empty)")
 

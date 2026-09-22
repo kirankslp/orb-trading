@@ -30,14 +30,22 @@ is judgment.** Only the second one needs a model.
 
 ```bash
 git clone https://github.com/kirankslp/orb-trading && cd orb-trading
-python3 -m venv .venv && .venv/bin/pip install yfinance pandas numpy
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python test_orb_backtest.py     # must print "all checks passed"
+.venv/bin/python -m unittest test_kite_data.py
 ./scripts/run_daily.sh premarket          # confirm it works by hand first
 ```
 
 The wrapper resolves the repo from its own path and does not rely on inherited
 environment, which is the usual reason a job that works in a shell fails under
 cron. Set `ORB_PYTHON` if you are not using `./.venv`.
+
+Kite Connect requires an API key and a current access token. Before a local
+run, set `KITE_CREDENTIALS_FILE` to the existing file that contains `api_key`
+(and optionally `api_secret`), then set a fresh `KITE_ACCESS_TOKEN`. The token
+expires at 06:00 IST the next day. The wrapper defaults the credentials file to
+the sibling `../zerodha-arth/creds.txt` used by this machine; set the variable
+explicitly on another machine. It never writes the token to disk.
 
 Then `crontab -e`:
 
@@ -99,7 +107,7 @@ after the Actions health run commits.
 
 It reads `reports/` from the repo, checks the `AGENT.md` thresholds, and pushes
 a notification. It does **not** fetch market data, because the Anthropic cloud
-environment's network policy denies Yahoo, NSE and Upstox. The prompt says so
+environment's network policy denies broker market-data access. The prompt says so
 explicitly so a firing does not waste itself trying.
 
 To run a Routine on your own machine instead, create it from Claude Code on that

@@ -52,14 +52,19 @@ line, and do not retry.
 
 ```bash
 cd <repo>
-pip install yfinance pandas numpy
-python test_orb_backtest.py     # 13 checks, must print "all checks passed"
+pip install -r requirements.txt
+python test_orb_backtest.py     # must print "all checks passed"
+python -m unittest test_kite_data.py
 ```
 
 Config lives at the top of `orb_backtest.py` (budget, stops, targets, costs) and
 `symbol_screener.py` (universe, filters, weights). The agent reads these. **The
 agent must not edit them.** Config changes are a human decision; if the agent
 believes one is warranted it says so in its report and stops there.
+
+The default universe uses current NSE trading symbols. If a corporate action
+renames a constituent, replace its symbol before the next run rather than
+silently excluding it from the screen.
 
 ---
 
@@ -143,22 +148,28 @@ At the current config that is about 50%.
 4. **Backtest is not forecast.** Never phrase historical results as expected
    returns. No projections, no annualizing, no "if this continues".
 5. **Report losses at the same volume as gains.** A losing week leads the report.
-6. **Data provenance.** Yahoo Finance intraday is delayed, unadjusted, and capped
-   at 60 days. Say so whenever quoting a level a human might trade against, and
-   tell them to verify on their broker feed.
+6. **Data provenance.** Candles come from Kite Connect's historical-data API.
+   They are still OHLCV bars, not observed fills. Say so whenever quoting a
+   level a human might trade against, and tell them to verify it on the live
+   broker feed.
 
 ---
 
 ## Known limits to restate when relevant
 
-- **60-day ceiling.** Yahoo caps intraday history, so the backtest is ~40
-  sessions. That is too few to separate edge from noise. Never call a result
-  significant.
-- **Survivorship.** `UNIVERSE` is today's large-cap list applied to past dates.
-  Mild over a 60-day window, serious if anyone extends the history.
-- **Slippage is an assumption.** `SLIPPAGE_PCT = 0.0005` is an estimate and is
-  roughly half of total friction. Real fills decide whether the strategy is
-  viable. Recommend the human validate it against actual contract notes.
+- **Backtest window.** `PERIOD` controls the requested calendar-day window; the
+  default 60 days is still only about 40 sessions. That is too few to separate
+  edge from noise. Never call a result significant.
+- **Survivorship.** The candidate pool is today's symbol list applied to past
+  dates. Mild over a 60-day window, serious if anyone extends the history, and
+  worse with a wide pool than a large-cap one because there is more churn.
+- **Selection pulls toward thin names.** `W_ATR` rewards volatility and thin
+  stocks are more volatile, so a wide pool concentrates picks in the expensive
+  slippage tiers. Check the tier mix in the trade log before trusting a result.
+- **Slippage is an assumption.** `SLIPPAGE_TIERS` are estimates, not measured
+  fills, and slippage is roughly half of total friction. Real fills decide
+  whether the strategy is viable. Recommend the human validate the tiers against
+  actual contract notes, especially the thin ones.
 - **Intrabar path is unknown.** Candles spanning both stop and target are
   resolved as stop-first (`ENTRY_BAR_POLICY = conservative`). The `ambiguous`
   flag marks those trades.
