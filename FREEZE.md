@@ -16,7 +16,8 @@ file records what is frozen, why, and what is still allowed to change.
 | `SQUAREOFF_TIME` | 15:15 |
 | `ENTRY_BAR_POLICY` | `conservative` |
 | `MIN_AVG_TURNOVER` | ₹500 cr |
-| `UNIVERSE_FILE` | `EQUITY_L.csv` (2565 names) |
+| `UNIVERSE_FILE` | `EQUITY_L.csv`, EQ series only (2302 names) |
+| `TRADEABLE_SERIES` | `{EQ}` |
 
 `paper_broker.config_fingerprint()` hashes every parameter that changes what a
 trade is. That covers three groups:
@@ -97,6 +98,9 @@ sooner than an edge estimate would.
 - The screener's ranking logic
 - The universe: `UNIVERSE_FILE`, the `ORB_UNIVERSE_FILE` override, or the
   contents of whatever file they point at
+- `TRADEABLE_SERIES`. BE and BZ are Trade-to-Trade: the exchange requires
+  delivery, so they cannot be squared off intraday and this strategy cannot
+  take them at all. Widening this would put untakeable trades in the sample.
 
 If a parameter change looks warranted, write the hypothesis down, then test it
 against the **full Kite history** (which lifts Yahoo's 60-day cap, so years are

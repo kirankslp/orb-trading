@@ -8,13 +8,15 @@ dead token rather than dead scrips still aborts.
 
 import io
 import os
+import shutil
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
 import pandas as pd
 
 import symbol_screener as sc
-from kite_data import KiteDataError
+from kite_data import KiteDataError, KiteInstrumentError
 
 
 class FakeMD:
@@ -107,3 +109,97 @@ class TestUniverse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTradeToTradeFilter(unittest.TestCase):
+    """BE and BZ require delivery and cannot be squared off intraday, so an
+    intraday strategy must never see them. This is correctness, not tidiness:
+    including them puts untakeable trades in a backtest."""
+
+    def _csv(self, rows):
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "pool.csv")
+        with open(path, "w") as fh:
+            fh.write("SYMBOL,NAME OF COMPANY, SERIES\n")
+            for sym, series in rows:
+                fh.write(f"{sym},Some Co Ltd,{series}\n")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        return path
+
+    def test_t2t_series_are_dropped(self):
+        path = self._csv([("GOODEQ", "EQ"), ("BADBE", "BE"), ("BADBZ", "BZ")])
+        with redirect_stdout(io.StringIO()):
+            out = sc.load_universe(path)
+        self.assertEqual(out, ["GOODEQ.NS"])
+
+    def test_drop_is_reported(self):
+        path = self._csv([("GOODEQ", "EQ"), ("BADBE", "BE")])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            sc.load_universe(path)
+        self.assertIn("dropped 1", buf.getvalue())
+        self.assertIn("Trade-to-Trade", buf.getvalue())
+
+    def test_whitespace_and_case_tolerated(self):
+        path = self._csv([(" mixedeq ", " eq "), ("X", " Be ")])
+        with redirect_stdout(io.StringIO()):
+            out = sc.load_universe(path)
+        self.assertEqual(out, ["MIXEDEQ.NS"])
+
+    def test_csv_without_series_column_is_untouched(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = os.path.join(tmp, "plain.csv")
+        with open(path, "w") as fh:
+            fh.write("SYMBOL\nAAA\nBBB\n")
+        self.assertEqual(sc.load_universe(path), ["AAA.NS", "BBB.NS"])
+
+    def test_shipped_equity_list_drops_the_known_t2t_name(self):
+        """3IINFOLTD is series BE and is what aborted a real 2565-name run."""
+        with redirect_stdout(io.StringIO()):
+            u = sc.load_universe("EQUITY_L.csv")
+        self.assertNotIn("3IINFOLTD.NS", u)
+        self.assertEqual(len(u), 2302)
+
+
+class TestInstrumentErrorTolerated(unittest.TestCase):
+    """A symbol absent from Kite's instrument list raises KiteInstrumentError,
+    a SIBLING of KiteDataError. Catching only KiteDataError let one such name
+    abort the whole run."""
+
+    class MissingInstrumentMD(FakeMD):
+        def daily(self, symbol, days):
+            if symbol in self.dead:
+                raise KiteInstrumentError(
+                    f"'{symbol}' is not a current NSE Kite instrument")
+            return super().daily(symbol, days)
+
+    def test_missing_instrument_is_skipped_not_fatal(self):
+        universe = [f"S{i:04d}.NS" for i in range(100)]
+        md = self.MissingInstrumentMD(universe[:5])
+        with redirect_stdout(io.StringIO()):
+            out = sc.fetch_daily(universe, days=40, market_data=md)
+        self.assertEqual(len(out), 95)
+
+    def test_both_error_types_count_toward_the_same_tolerance(self):
+        universe = [f"S{i:04d}.NS" for i in range(100)]
+
+        class Mixed(FakeMD):
+            def daily(self, symbol, days):
+                if symbol in ("S0000.NS", "S0001.NS"):
+                    raise KiteInstrumentError("absent")
+                if symbol in ("S0002.NS",):
+                    raise KiteDataError("bad response")
+                return FakeMD.daily(self, symbol, days)
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            out = sc.fetch_daily(universe, days=40, market_data=Mixed())
+        self.assertEqual(len(out), 97)
+        self.assertIn("skipped 3", buf.getvalue())
+
+    def test_too_many_missing_instruments_still_aborts(self):
+        universe = [f"S{i:04d}.NS" for i in range(100)]
+        md = self.MissingInstrumentMD(universe[:40])
+        with self.assertRaises(SystemExit):
+            sc.fetch_daily(universe, days=40, market_data=md)

@@ -17,7 +17,7 @@ import os
 
 import pandas as pd
 import numpy as np
-from kite_data import KiteDataError, KiteMarketData
+from kite_data import KiteDataError, KiteInstrumentError, KiteMarketData
 
 # ------------------------- CONFIG -------------------------
 # The candidate POOL is just what gets fetched. Liquidity decides the tradeable
@@ -59,6 +59,10 @@ MIN_AVG_TURNOVER= 500e7    # min avg daily turnover in Rs (500 cr)
 # daily fetches fail every run. Abort only past this share of the universe,
 # which distinguishes "dead scrips" from "dead session token". Always reported.
 MAX_FETCH_FAILURE_PCT = 0.15
+# Series that can be squared off intraday. BE and BZ are Trade-to-Trade: the
+# exchange requires delivery, so no intraday strategy can use them. Empty set
+# disables the filter.
+TRADEABLE_SERIES = {"EQ"}
 TOP_N           = 10       # size of final watchlist
 # ranking weights (must sum to ~1)
 W_ATR           = 0.45     # reward movement
@@ -87,6 +91,20 @@ def load_universe(path=None):
     if path.lower().endswith(".csv"):
         df = pd.read_csv(path)
         col = next((c for c in df.columns if c.strip().upper() == "SYMBOL"), df.columns[0])
+        # NSE's EQUITY_L.csv carries the Trade-to-Trade segments alongside the
+        # rolling one. BE and BZ names must be taken to delivery and CANNOT be
+        # squared off the same day, so an intraday strategy cannot trade them:
+        # including them would put trades in a backtest that were never
+        # available to take. 263 of 2565 names in the shipped file.
+        series_col = next((c for c in df.columns if c.strip().upper() == "SERIES"), None)
+        if series_col is not None and TRADEABLE_SERIES:
+            keep = df[series_col].astype(str).str.strip().str.upper().isin(TRADEABLE_SERIES)
+            dropped = int((~keep).sum())
+            df = df[keep]
+            if dropped:
+                print(f"note: dropped {dropped} non-{'/'.join(sorted(TRADEABLE_SERIES))} "
+                      f"symbols from {os.path.basename(path)} "
+                      f"(Trade-to-Trade cannot be squared off intraday)")
         syms = df[col].astype(str)
     else:
         with open(path) as f:
@@ -110,7 +128,12 @@ def fetch_daily(universe=None, days=None, market_data=None):
     for sym in universe:
         try:
             df = market_data.daily(sym, days)
-        except KiteDataError as exc:
+        except (KiteDataError, KiteInstrumentError) as exc:
+            # KiteInstrumentError is a sibling of KiteDataError, not a subclass.
+            # It is also the DOMINANT failure for an exchange dump: recent
+            # listings, renames and suspensions are absent from Kite's
+            # instrument list. Catching only KiteDataError let one such symbol
+            # abort a 2565-name run.
             failures.append(str(exc))
             continue
         if df.empty:
