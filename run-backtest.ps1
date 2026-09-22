@@ -112,16 +112,22 @@ if ($UniverseFile) {
 # seconds, not after fifteen minutes of fetching.
 Write-Host ''
 Write-Host 'Checking the Kite session...' -NoNewline
+# Native commands that write to stderr raise NativeCommandError while
+# ErrorActionPreference is 'Stop', which aborts on the first line of a Python
+# traceback and throws the rest away. Relax it around every external call.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 $check = & $Python -c @"
-import sys
+import sys, traceback
 try:
     from kite_data import kite_client
     c = kite_client()
     p = c.profile()
     print('OK ' + str(p.get('user_name') or p.get('user_id') or ''))
-except Exception as exc:
-    print('FAIL ' + str(exc)); sys.exit(1)
+except Exception:
+    traceback.print_exc(); sys.exit(1)
 "@ 2>&1
+$ErrorActionPreference = $prevEAP
 if ($LASTEXITCODE -ne 0) {
     Write-Host ' failed' -ForegroundColor Red
     Fail ($check -join "`n")
@@ -133,18 +139,27 @@ if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out
 $stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
 $log = Join-Path $OutDir "backtest_$stamp.txt"
 
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 $cfg = & $Python -c @"
 import orb_backtest as ob, symbol_screener as sc
 print(f'Rs{ob.DAY_BUDGET:,} over {ob.MAX_POSITIONS} slots = Rs{ob.slot_budget():,.0f}/slot | '
       f'{ob.PERIOD} of {ob.INTERVAL} bars | universe {len(sc.load_universe())} names')
-"@
+"@ 2>&1
+$ErrorActionPreference = $prevEAP
 Write-Host ''
 Write-Host "Config: $cfg"
 Write-Host "Transcript: $log"
 Write-Host ''
 
-& $Python orb_backtest.py 2>&1 | Tee-Object -FilePath $log
+# Python writes its traceback to stderr. Merging that into the pipeline is
+# what we want for the transcript, but it must not be treated as a terminating
+# PowerShell error or the traceback is lost after its first line.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+& $Python -X faulthandler orb_backtest.py 2>&1 | Tee-Object -FilePath $log
 $code = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
 
 # Keep the trade log next to the transcript so a rerun cannot overwrite it.
 if (Test-Path "$PSScriptRoot\orb_trades.csv") {
@@ -153,7 +168,9 @@ if (Test-Path "$PSScriptRoot\orb_trades.csv") {
 
 Write-Host ''
 if ($code -ne 0) {
-    Write-Host "Backtest exited with code $code. See $log" -ForegroundColor Red
+    Write-Host "Backtest exited with code $code." -ForegroundColor Red
+    Write-Host "Last lines of $log :" -ForegroundColor Red
+    if (Test-Path $log) { Get-Content $log -Tail 25 | ForEach-Object { Write-Host "  $_" } }
     exit $code
 }
 Write-Host 'Done.' -ForegroundColor Green
