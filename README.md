@@ -25,6 +25,31 @@ token is saved by this project.
 Use `python daily_plan.py --premarket`, `python daily_plan.py`, or
 `python orb_backtest.py` after authenticating.
 
+## Paper trading
+
+A point-in-time forward test at Rs 1,00,000 across 20 slots. The strategy
+config is frozen for the run; see `FREEZE.md` for what that covers and why.
+
+```bash
+python paper_broker.py plan       # 10:05 IST, after the 45m range closes
+python paper_broker.py resolve    # 15:45 IST, after the close
+python paper_report.py            # review
+python paper_broker.py status     # freeze integrity, unresolved plans
+```
+
+A plan is committed once to `paper/plans/<date>.json` and never rewritten.
+Resolution replays the session against the levels recorded that morning rather
+than recomputing them, which is what keeps the forward test free of the
+lookahead a backtest cannot rule out. The ledger at `paper/ledger.csv` is
+append-only.
+
+`paper_report.py` leads with a confidence interval, not the P&L, and says so
+when a result is indistinguishable from zero. At this trade count a month of
+P&L cannot separate a winning strategy from a losing one; what it does measure
+well is execution drift, the gap between a published level and the actual fill.
+
+No orders are placed by any of this.
+
 ## Unified local app
 
 The React/Vite app combines this ORB project with the NIFTY 100 SMA scanner in
