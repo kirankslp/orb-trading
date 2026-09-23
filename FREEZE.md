@@ -108,6 +108,15 @@ available) rather than against the last few sessions. That is where an edge
 estimate comes from. The forward run is for validating execution, not for
 searching parameter space.
 
+## Research outside the freeze
+
+`strategies.py` and `strategy_backtest.py` backtest other rules (VWAP and
+Bollinger mean reversion, EMA crossover, a 15-minute ORB) on the same picks and
+costs. They are research, not the strategy under test: they never write a plan,
+never touch the ledger, and are deliberately outside the fingerprint. If one of
+them earns a place in live forward testing, that is a NEW freeze with a new
+fingerprint, not an edit to this one.
+
 ## Daily routine
 
 ```bash

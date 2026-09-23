@@ -25,6 +25,32 @@ token is saved by this project.
 Use `python daily_plan.py --premarket`, `python daily_plan.py`, or
 `python orb_backtest.py` after authenticating.
 
+## Strategy comparison
+
+`strategy_backtest.py` runs five intraday strategies on the **same**
+point-in-time screener picks, sessions and cost model, so only the rule differs:
+
+| Name | Rule |
+|---|---|
+| `orb45` | the frozen ORB: 45-minute range on 15m bars (baseline) |
+| `orb15` | ORB on the first 15 minutes, on 5m bars |
+| `vwap` | fade a close 0.5x daily ATR away from session VWAP, exit at VWAP |
+| `bollinger` | fade a close outside the 20/2 bands, exit at the middle band |
+| `ema` | 9/20 EMA crossover, exit on the opposite cross |
+
+Signals are read at a bar's close and filled at the next bar's open, and every
+strategy carries the ORB's ATR stop and 15:15 square-off. The report leads with
+a paired, session-by-session comparison against `orb45` and says when a
+difference is not statistically distinguishable. It also shows how far price
+travelled after each ORB entry, in ATR and in opening-range widths, to diagnose
+which target unit the market actually reaches.
+
+```powershell
+.\run-backtest.ps1 -Compare -RequestToken <fresh token>
+```
+
+Research only. None of these strategies is part of the paper-trading freeze.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,

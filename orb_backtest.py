@@ -422,14 +422,22 @@ def report(tr, title="", unaffordable=None):
     print("Trade log -> orb_trades.csv")
 
 
-def run_screener_mode():
+def screener_picks(market_data=None):
+    """Point-in-time daily picks for every session in the intraday window.
+
+    Returns (pool, sessions, picks, metrics): picks is {date: [symbols]}, metrics is
+    {(date, symbol): {"atr_pct", "turnover_cr"}}. Shared by run_screener_mode
+    and strategy_backtest so every strategy is judged on the SAME symbols and
+    days, which is what makes a comparison between them paired rather than
+    confounded by selection.
+    """
     import symbol_screener as sc
 
     # Daily history is cheap and unlimited, so pull enough to score the FIRST
     # session of the intraday window with a full lookback behind it. The pool is
     # only what gets fetched; the liquidity floor decides what is tradeable.
     pool = sc.load_universe()
-    daily = fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120)
+    daily = fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120, market_data)
     sessions = sorted({d for df in daily.values() for d in df.index.date})
     cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover
@@ -451,7 +459,12 @@ def run_screener_mode():
         raise SystemExit(
             f"Screener returned no picks. At Rs {budget:,.0f}/position nothing in "
             f"the universe is affordable, or the liquidity filters are too tight.")
+    return pool, sessions, picks, metrics
 
+
+def run_screener_mode():
+    pool, sessions, picks, metrics = screener_picks()
+    budget = slot_budget()
     needed = sorted({s for p in picks.values() for s in p})
     print(f"{len(sessions)} sessions | pool {len(pool)} | {len(needed)} distinct "
           f"symbols ever picked | top {MAX_POSITIONS}/day at Rs {budget:,.0f}/position")

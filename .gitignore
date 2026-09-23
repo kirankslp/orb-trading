@@ -11,3 +11,5 @@ creds.txt
 web/node_modules/
 web/dist/
 kite_instruments.csv
+strategy_trades.csv
+backtests/

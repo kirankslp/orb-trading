@@ -21,6 +21,12 @@
     06:00 IST, so this is the usual path first thing in the morning.
 
 .EXAMPLE
+    .\run-backtest.ps1 -Compare -RequestToken abc123
+    Runs strategy_backtest.py instead: the frozen ORB, a 15-minute ORB, VWAP
+    and Bollinger mean reversion and a 9/20 EMA crossover, all on the same
+    picks, days and costs, with a paired comparison against the ORB.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -32,6 +38,7 @@ param(
     [string]$AccessToken,
     [string]$RequestToken,
     [string]$UniverseFile,
+    [switch]$Compare,
     [string]$OutDir = "$PSScriptRoot\backtests"
 )
 
@@ -184,13 +191,21 @@ Write-Host ''
 # PowerShell error or the traceback is lost after its first line.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& $Python -X faulthandler orb_backtest.py 2>&1 | Tee-Object -FilePath $log
+if ($Compare) {
+    $pyScript = 'strategy_backtest.py'
+    $tradeLog = 'strategy_trades'
+} else {
+    $pyScript = 'orb_backtest.py'
+    $tradeLog = 'orb_trades'
+}
+& $Python -X faulthandler $pyScript 2>&1 | Tee-Object -FilePath $log
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEAP
 
 # Keep the trade log next to the transcript so a rerun cannot overwrite it.
-if (Test-Path "$PSScriptRoot\orb_trades.csv") {
-    Copy-Item "$PSScriptRoot\orb_trades.csv" (Join-Path $OutDir "orb_trades_$stamp.csv")
+$savedLog = Join-Path $OutDir "$($tradeLog)_$stamp.csv"
+if (Test-Path "$PSScriptRoot\$tradeLog.csv") {
+    Copy-Item "$PSScriptRoot\$tradeLog.csv" $savedLog
 }
 
 Write-Host ''
@@ -202,6 +217,6 @@ if ($code -ne 0) {
 }
 Write-Host 'Done.' -ForegroundColor Green
 Write-Host "  transcript : $log"
-Write-Host "  trade log  : $(Join-Path $OutDir "orb_trades_$stamp.csv")"
+Write-Host "  trade log  : $savedLog"
 Write-Host ''
 Write-Host 'Backtest only. No orders placed, no config changed.'
