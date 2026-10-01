@@ -8,14 +8,16 @@ file records what is frozen, why, and what is still allowed to change.
 | Parameter | Value |
 |---|---|
 | `DAY_BUDGET` | ₹1,00,000 |
-| `MAX_POSITIONS` | 20 |
-| Slot budget | ₹5,000 per position |
+| `MAX_POSITIONS` | 10 |
+| Slot budget | ₹10,000 per position |
 | `STOP_MODE` | `atr` |
 | `ATR_STOP_MULT` / `ATR_TARGET_MULT` | 0.5 / 1.0 |
 | `OR_MINUTES` | 45 |
 | `SQUAREOFF_TIME` | 15:15 |
 | `ENTRY_BAR_POLICY` | `conservative` |
 | `MIN_AVG_TURNOVER` | ₹500 cr |
+| `UNIVERSE_FILE` | `EQUITY_L.csv`, EQ series only (2302 names) |
+| `TRADEABLE_SERIES` | `{EQ}` |
 
 `paper_broker.config_fingerprint()` hashes every parameter that changes what a
 trade is. That covers three groups:
@@ -33,8 +35,9 @@ than a promise.
 
 ## Why freeze at all
 
-At 20 trades a day over ~21 sessions the P&L of a good strategy and a bad one
-overlap almost entirely. On this config's economics:
+At 10 trades a day over ~21 sessions the P&L of a good strategy and a bad one
+overlap almost entirely. On this config's economics (net R:R 1.57, break-even
+win rate 38.9% on a 2% ATR liquid name):
 
 - a **45% win-rate (winning) strategy loses money over 30 days 23% of the time**
 - a **35% win-rate (losing) strategy makes money over 30 days 28% of the time**
@@ -48,16 +51,19 @@ beautifully curve-fit strategy and no information.
 ## What a 30-session run can and cannot settle
 
 **Cannot:** whether the strategy has an edge. Time to an 80%-confidence verdict
-at 20 trades/day, adjusting for same-day correlation (ρ≈0.25):
+at 10 trades/day, adjusting for same-day correlation (ρ≈0.25):
 
 | True win rate | Sessions | Calendar |
 |---|---|---|
-| 45% | 92 | ~4.4 months |
-| 50% | 30 | ~1.4 months |
+| 45% | 104 | ~5.0 months |
+| 50% | 34 | ~1.6 months |
 
-Note that 20 trades a day is not 10x the information of 2. Same-day intraday
-positions share market direction, so 10x the trades is roughly 2 to 2.5x the
-*independent* samples.
+Same-day intraday positions share market direction, so trade count buys far
+less than it looks. 10 trades a day is ~3.1 independent samples per session;
+20 would be ~3.5, only about 1.2x more, which is why the slot count was set by
+sizing fidelity instead. At a ₹5,000 slot, whole-share rounding left ~8.5% of
+capital idle and put 29% of positions under 5 shares, where an ATR-sized stop
+cannot be expressed. A ₹10,000 slot deploys ~94% with no unaffordable names.
 
 **Can:** whether the execution assumptions hold. These are per-trade
 measurements rather than win/loss bits, so they converge roughly an order of
@@ -65,7 +71,7 @@ magnitude faster:
 
 - **Entry drift**, published level vs actual fill. `AGENT.md` flags slippage as
   an estimate worth about half of all friction and the first thing to validate.
-  42 fills pin it to about ±0.015pp, enough to catch a 2x error.
+  ~200 fills over the run pin it tightly, enough to catch a 2x error.
 - **Ambiguous rate**, trades whose outcome is the `ENTRY_BAR_POLICY` assumption
   rather than observed data.
 - **Trigger rate**, how often a published level is reached at all.
@@ -92,12 +98,24 @@ sooner than an edge estimate would.
 - The screener's ranking logic
 - The universe: `UNIVERSE_FILE`, the `ORB_UNIVERSE_FILE` override, or the
   contents of whatever file they point at
+- `TRADEABLE_SERIES`. BE and BZ are Trade-to-Trade: the exchange requires
+  delivery, so they cannot be squared off intraday and this strategy cannot
+  take them at all. Widening this would put untakeable trades in the sample.
 
 If a parameter change looks warranted, write the hypothesis down, then test it
 against the **full Kite history** (which lifts Yahoo's 60-day cap, so years are
 available) rather than against the last few sessions. That is where an edge
 estimate comes from. The forward run is for validating execution, not for
 searching parameter space.
+
+## Research outside the freeze
+
+`strategies.py` and `strategy_backtest.py` backtest other rules (VWAP and
+Bollinger mean reversion, EMA crossover, a 15-minute ORB) on the same picks and
+costs. They are research, not the strategy under test: they never write a plan,
+never touch the ledger, and are deliberately outside the fingerprint. If one of
+them earns a place in live forward testing, that is a NEW freeze with a new
+fingerprint, not an edit to this one.
 
 ## Daily routine
 

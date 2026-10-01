@@ -333,17 +333,22 @@ class TestFingerprintCoversSelection(unittest.TestCase):
 
 
 class TestUniverseOverride(unittest.TestCase):
-    def test_env_var_overrides(self):
+    def test_env_var_overrides_the_configured_file(self):
+        """The override must change WHICH file is read, not merely be accepted."""
         saved = os.environ.get("ORB_UNIVERSE_FILE")
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "tiny.txt")
+        with open(path, "w") as fh:
+            fh.write("AAA\nBBB.NS\n")
         try:
-            os.environ["ORB_UNIVERSE_FILE"] = "EQUITY_L.csv"
-            wide = sc.load_universe()
+            default = sc.load_universe()
+            os.environ["ORB_UNIVERSE_FILE"] = path
+            self.assertEqual(sc.load_universe(), ["AAA.NS", "BBB.NS"])
             os.environ.pop("ORB_UNIVERSE_FILE")
-            narrow = sc.load_universe()
-            self.assertGreater(len(wide), len(narrow),
-                               "EQUITY_L.csv must widen the default 30-name pool")
+            self.assertEqual(sc.load_universe(), default, "must revert cleanly")
         finally:
             if saved is None:
                 os.environ.pop("ORB_UNIVERSE_FILE", None)
             else:
                 os.environ["ORB_UNIVERSE_FILE"] = saved
+            shutil.rmtree(tmp, ignore_errors=True)
