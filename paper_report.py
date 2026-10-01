@@ -32,6 +32,7 @@ import pandas as pd
 
 import orb_backtest as ob
 import paper_broker as pb
+from stats import session_total_ci
 
 
 def _wilson(k, n, z=1.96):
@@ -46,14 +47,14 @@ def _wilson(k, n, z=1.96):
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def _pnl_ci(pnl, z=1.96):
-    """CI on total P&L, from the per-trade spread. n<2 has no spread to use."""
-    n = len(pnl)
-    if n < 2:
-        return None, None
-    se_total = pnl.std(ddof=1) * math.sqrt(n)
-    total = pnl.sum()
-    return total - z * se_total, total + z * se_total
+def _pnl_ci(led, sessions=None):
+    """CI on total P&L, one session per draw (stats.session_total_ci).
+
+    A per-trade interval would treat ten positions riding the same morning as
+    ten independent results and come out too narrow. Sessions are the plans
+    committed, so a plan whose levels never triggered counts as a zero day.
+    """
+    return session_total_ci(led, "pnl", by="plan_date", sessions=sessions)
 
 
 def breakeven_win_rate(led):
@@ -69,12 +70,12 @@ def breakeven_win_rate(led):
     return l / (w + l)
 
 
-def summarise(led):
+def summarise(led, sessions=None):
     n = len(led)
     wins = led[led.pnl > 0]
     win_rate = len(wins) / n if n else 0.0
     lo_w, hi_w = _wilson(len(wins), n)
-    lo_p, hi_p = _pnl_ci(led.pnl)
+    lo_p, hi_p = _pnl_ci(led, sessions)
     be = breakeven_win_rate(led)
     return dict(n=n, sessions=led.plan_date.nunique(), win_rate=win_rate,
                 win_lo=lo_w, win_hi=hi_w, pnl=led.pnl.sum(),
@@ -93,7 +94,12 @@ def report(led, days=None):
         keep = sorted(led.plan_date.unique())[-days:]
         led = led[led.plan_date.isin(keep)]
 
-    s = summarise(led)
+    # Every committed plan in the window is a session, including ones whose
+    # levels never triggered: those are zero-P&L days, not missing days.
+    lo_d, hi_d = led.plan_date.min(), led.plan_date.max()
+    sessions = sorted({d for d in pb.planned_dates() if lo_d <= d <= hi_d}
+                      | set(led.plan_date))
+    s = summarise(led, sessions)
     equity = pb.STARTING_CAPITAL + s["pnl"]
 
     print("=" * 74)

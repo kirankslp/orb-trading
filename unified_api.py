@@ -17,9 +17,10 @@ from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from zoneinfo import ZoneInfo
 
+import calendar_data
 import daily_plan
 import orb_backtest as ob
 import symbol_screener as sc
@@ -308,6 +309,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self.send_json(HTTPStatus.OK, STATE.latest_scan)
             if self.path == "/api/dashboard":
                 return self.send_json(HTTPStatus.OK, dashboard_state())
+            url = urlparse(self.path)
+            if url.path == "/api/calendar":
+                # Reads trade logs already on disk; needs no Kite session, so the
+                # calendar works even before you log in.
+                q = parse_qs(url.query)
+                pick = lambda k: (q.get(k) or [None])[0] or None
+                return self.send_json(HTTPStatus.OK, calendar_data.calendar_payload(
+                    ROOT, pick("log"), pick("strategy")))
             return self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except Exception as exc:
             return self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

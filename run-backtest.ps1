@@ -33,6 +33,12 @@
     fetched in several requests per symbol; expect a slower run.
 
 .EXAMPLE
+    .\run-backtest.ps1 -Spreads -RequestToken abc123
+    Not a backtest: logs the live order book for today's picks every 15
+    minutes until the close (spread_probe.py), to measure real slippage.
+    Start it after 09:15. Read the result with: python spread_probe.py report
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -45,6 +51,8 @@ param(
     [string]$RequestToken,
     [string]$UniverseFile,
     [switch]$Compare,
+    [switch]$Spreads,
+    [int]$Every = 15,
     [int]$Days = 0,
     [string]$OutDir = "$PSScriptRoot\backtests"
 )
@@ -213,22 +221,29 @@ Write-Host ''
 # PowerShell error or the traceback is lost after its first line.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
+$pyArgs = @()
 if ($Compare) {
     $pyScript = 'strategy_backtest.py'
     $tradeLog = 'strategy_trades'
+} elseif ($Spreads) {
+    # Long-running: snapshots until 15:30, appending to spreads\spreads.csv.
+    $pyScript = 'spread_probe.py'
+    $pyArgs = @('loop', '--every', "$Every")
+    $tradeLog = $null
 } else {
     $pyScript = 'orb_backtest.py'
     $tradeLog = 'orb_trades'
 }
-& $Python -X faulthandler $pyScript 2>&1 | Tee-Object -FilePath $log
+& $Python -X faulthandler $pyScript @pyArgs 2>&1 | Tee-Object -FilePath $log
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEAP
 $env:ORB_UNIVERSE_FILE = $prevUniverse
 $env:ORB_PERIOD_DAYS = $prevPeriod
 
 # Keep the trade log next to the transcript so a rerun cannot overwrite it.
-$savedLog = Join-Path $OutDir "$($tradeLog)_$stamp.csv"
-if (Test-Path "$PSScriptRoot\$tradeLog.csv") {
+$savedLog = $null
+if ($tradeLog -and (Test-Path "$PSScriptRoot\$tradeLog.csv")) {
+    $savedLog = Join-Path $OutDir "$($tradeLog)_$stamp.csv"
     Copy-Item "$PSScriptRoot\$tradeLog.csv" $savedLog
 }
 
@@ -241,6 +256,7 @@ if ($code -ne 0) {
 }
 Write-Host 'Done.' -ForegroundColor Green
 Write-Host "  transcript : $log"
-Write-Host "  trade log  : $savedLog"
+if ($savedLog) { Write-Host "  trade log  : $savedLog" }
+if ($Spreads) { Write-Host "  spreads    : $PSScriptRoot\spreads\spreads.csv  (python spread_probe.py report)" }
 Write-Host ''
 Write-Host 'Backtest only. No orders placed, no config changed.'

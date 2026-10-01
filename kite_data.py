@@ -231,6 +231,32 @@ class KiteMarketData:
             if f"NSE:{symbol}" in quotes and quotes[f"NSE:{symbol}"].get("last_price") is not None
         }
 
+    def order_books(self, symbols, batch=200):
+        """Live five-level market depth, keyed by plain trading symbol.
+
+        Each value is {"last_price", "buy": [{price, quantity, orders}, ...],
+        "sell": [...]}, best price first. Kite's quote endpoint takes up to 500
+        instruments a call; 200 keeps well inside that.
+        """
+        trading_symbols = list(dict.fromkeys(kite_symbol(symbol) for symbol in symbols))
+        out = {}
+        for i in range(0, len(trading_symbols), batch):
+            chunk = trading_symbols[i:i + batch]
+            self._wait_turn()
+            try:
+                quotes = self.client.quote([f"NSE:{s}" for s in chunk]) or {}
+            except Exception as exc:  # SDK has several exception classes; retain its message.
+                raise KiteDataError(f"Kite quote failed: {exc}") from exc
+            for s in chunk:
+                q = quotes.get(f"NSE:{s}")
+                if not q:
+                    continue
+                depth = q.get("depth") or {}
+                out[s] = {"last_price": q.get("last_price"),
+                          "buy": list(depth.get("buy") or []),
+                          "sell": list(depth.get("sell") or [])}
+        return out
+
     def candles(self, symbol, interval, start, end):
         """Return OHLCV candles between naive IST datetimes/dates, inclusive.
 
