@@ -258,7 +258,7 @@ def orb_backtest():
     market = require_session()
     pool = sc.load_universe()
     daily = sc.fetch_daily(pool, days=sc.LOOKBACK_DAYS + 120, market_data=market)
-    sessions = sorted({day for frame in daily.values() for day in frame.index.date})
+    sessions = ob.closed_sessions(sorted({day for frame in daily.values() for day in frame.index.date}))
     cutoff = sessions[-1] - dt.timedelta(days=ob._period_days())
     sessions = [day for day in sessions if day > cutoff]
     budget, picks, metrics = ob.slot_budget(), {}, {}

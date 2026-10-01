@@ -27,6 +27,12 @@
     picks, days and costs, with a paired comparison against the ORB.
 
 .EXAMPLE
+    .\run-backtest.ps1 -Compare -Days 365 -RequestToken abc123
+    The same comparison over a year of history instead of the default 60 days.
+    Kite caps how much history one request may span, so longer windows are
+    fetched in several requests per symbol; expect a slower run.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -39,6 +45,7 @@ param(
     [string]$RequestToken,
     [string]$UniverseFile,
     [switch]$Compare,
+    [int]$Days = 0,
     [string]$OutDir = "$PSScriptRoot\backtests"
 )
 
@@ -108,10 +115,16 @@ if ($UniverseFile) {
     if (-not (Test-Path (Join-Path $PSScriptRoot $UniverseFile)) -and -not (Test-Path $UniverseFile)) {
         Fail "Universe file not found: $UniverseFile"
     }
-    $env:ORB_UNIVERSE_FILE = $UniverseFile   # read by symbol_screener.load_universe
     Write-Host "Universe override: $UniverseFile" -ForegroundColor Yellow
     Write-Host 'Kite is one request per instrument at 0.35s, so a 2565-name list' -ForegroundColor Yellow
     Write-Host 'takes ~15 minutes for daily bars alone, plus intraday per pick.' -ForegroundColor Yellow
+}
+
+# --- history window ----------------------------------------------------------
+# Applies to this run only. The daily plan and paper broker keep the default
+# window, since they only ever need recent bars.
+if ($Days -gt 0) {
+    Write-Host "History window: $Days calendar days" -ForegroundColor Yellow
 }
 
 # --- preflight -------------------------------------------------------------
@@ -173,12 +186,21 @@ if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out
 $stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
 $log = Join-Path $OutDir "backtest_$stamp.txt"
 
+# Run-scoped overrides. $env: changes outlive the script in the same console,
+# so they are set here and restored right after the run: a later paper_broker
+# or daily_plan from this window must not inherit a research universe or a
+# year-long fetch window.
+$prevUniverse = $env:ORB_UNIVERSE_FILE
+$prevPeriod = $env:ORB_PERIOD_DAYS
+if ($UniverseFile) { $env:ORB_UNIVERSE_FILE = $UniverseFile }   # read by symbol_screener.load_universe
+if ($Days -gt 0) { $env:ORB_PERIOD_DAYS = "$Days" }            # read by orb_backtest._period_days
+
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $cfg = & $Python -c @"
 import orb_backtest as ob, symbol_screener as sc
 print(f'Rs{ob.DAY_BUDGET:,} over {ob.MAX_POSITIONS} slots = Rs{ob.slot_budget():,.0f}/slot | '
-      f'{ob.PERIOD} of {ob.INTERVAL} bars | universe {len(sc.load_universe())} names')
+      f'{ob._period_days()}d of {ob.INTERVAL} bars | universe {len(sc.load_universe())} names')
 "@ 2>&1
 $ErrorActionPreference = $prevEAP
 Write-Host ''
@@ -201,6 +223,8 @@ if ($Compare) {
 & $Python -X faulthandler $pyScript 2>&1 | Tee-Object -FilePath $log
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEAP
+$env:ORB_UNIVERSE_FILE = $prevUniverse
+$env:ORB_PERIOD_DAYS = $prevPeriod
 
 # Keep the trade log next to the transcript so a rerun cannot overwrite it.
 $savedLog = Join-Path $OutDir "$($tradeLog)_$stamp.csv"

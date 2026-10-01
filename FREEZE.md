@@ -108,6 +108,20 @@ available) rather than against the last few sessions. That is where an edge
 estimate comes from. The forward run is for validating execution, not for
 searching parameter space.
 
+## Engine changes
+
+Parameters alone cannot catch a code change that alters fills, so
+`orb_backtest.ENGINE_VERSION` is inside the fingerprint and is bumped on every
+such fix. Results from different engine versions must never be pooled.
+
+| Version | Change |
+|---|---|
+| 1 | Original |
+| 2 | Square-off fills at the **open** of the first candle at or after `SQUAREOFF_TIME`. Before this every engine filled at that candle's **close**, which on 15m bars is the 15:30 market close: 15 minutes past the configured exit and past Zerodha's ~15:20 MIS auto square-off. On sessions where Kite's data stopped at 15:15 the same position exited at the 15:15 price instead, so a real 43-session run held about half its positions 15 minutes longer than the other half. Applied identically in `orb_backtest`, `strategies` and `paper_broker`. |
+
+Version 2 landed before any paper plan was committed, so no forward-test data
+spans the change.
+
 ## Research outside the freeze
 
 `strategies.py` and `strategy_backtest.py` backtest other rules (VWAP and

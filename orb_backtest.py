@@ -15,6 +15,7 @@ Edit CONFIG to change symbol, range window, stops, targets.
 """
 
 import datetime
+import os
 
 import pandas as pd
 import numpy as np
@@ -26,7 +27,18 @@ SYMBOL         = "NIFTY 50"  # used by single mode. "NIFTY BANK", "RELIANCE.NS"
 INTERVAL       = "15m"        # 5m or 15m
 PERIOD         = "60d"        # calendar days of Kite intraday history to fetch
 OR_MINUTES     = 45           # opening range = first N minutes
-SQUAREOFF_TIME = "15:15"      # force exit time
+SQUAREOFF_TIME = "15:15"      # force exit time: positions close AT 15:15, so the
+                              # fill is the OPEN of the first candle stamped 15:15
+                              # or later, the price at that moment. Filling at that
+                              # candle's close held every position to 15:30 on 15m
+                              # bars, past Zerodha's ~15:20 MIS auto square-off.
+
+# Bumped whenever the engine changes what a trade is without any parameter
+# changing. paper_broker hashes it, so results from before and after a logic
+# fix can never be pooled by accident.
+#   1  original
+#   2  square-off fills at the 15:15 open, not the 15:15 candle's close
+ENGINE_VERSION = 2
 
 # ---- stop and target sizing ----
 # "pct" uses the fixed SL_PCT/TARGET_PCT below, the same distance for every
@@ -118,7 +130,12 @@ def _normalize(df):
     return df
 
 
-def _period_days(period=PERIOD):
+def _period_days(period=None):
+    """Calendar days of intraday history. ORB_PERIOD_DAYS overrides PERIOD for a
+    single run, so a long research backtest does not lengthen the daily plan's
+    and paper broker's fetches, which only ever need the recent window."""
+    if period is None:
+        period = os.getenv("ORB_PERIOD_DAYS") or PERIOD
     try:
         return int(str(period).removesuffix("d"))
     except ValueError as exc:
@@ -287,7 +304,7 @@ def trade_day(day, g, n_or, symbol=None, budget=None, turnover_cr=None, atr_pct=
 
         # --- in a trade: check square-off, then the levels ---
         if t >= SQUAREOFF_TIME:
-            return _pnl(day, side, entry, c, entry_time, t, "squareoff", False, symbol, qty, turnover_cr, sl_pct, tgt_pct)
+            return _pnl(day, side, entry, o, entry_time, t, "squareoff", False, symbol, qty, turnover_cr, sl_pct, tgt_pct)
         hit = _resolve_exit(side, sl, tgt, h, l)
         if hit:
             px, reason, amb = hit
@@ -422,6 +439,14 @@ def report(tr, title="", unaffordable=None):
     print("Trade log -> orb_trades.csv")
 
 
+def closed_sessions(sessions, today=None):
+    """Drop today and anything later. A session still trading has a partial set
+    of bars, so a backtest of it would close positions at whatever the latest
+    live candle happened to print. Today is picked up by tomorrow's run."""
+    today = today or pd.Timestamp.now(tz="Asia/Kolkata").date()
+    return [d for d in sessions if d < today]
+
+
 def screener_picks(market_data=None):
     """Point-in-time daily picks for every session in the intraday window.
 
@@ -437,9 +462,17 @@ def screener_picks(market_data=None):
     # session of the intraday window with a full lookback behind it. The pool is
     # only what gets fetched; the liquidity floor decides what is tradeable.
     pool = sc.load_universe()
-    daily = fetch_daily_via(pool, sc.LOOKBACK_DAYS + 120, market_data)
-    sessions = sorted({d for df in daily.values() for d in df.index.date})
-    cutoff = sessions[-1] - datetime.timedelta(days=int(PERIOD.rstrip("d")))
+    # Enough trading days to cover the whole intraday window AND a full lookback
+    # before its first session. Never less than the original 150, so the default
+    # 60-day run fetches exactly what it always did.
+    window = _period_days()
+    trading_days = max(sc.LOOKBACK_DAYS + 120,
+                       sc.LOOKBACK_DAYS + 40 + int(window * 5 / 7))
+    daily = fetch_daily_via(pool, trading_days, market_data)
+    sessions = closed_sessions(sorted({d for df in daily.values() for d in df.index.date}))
+    if not sessions:
+        raise SystemExit("No completed sessions in the daily data.")
+    cutoff = sessions[-1] - datetime.timedelta(days=window)
     sessions = [d for d in sessions if d > cutoff]   # only what intraday can cover
 
     # One ranking per session, keeping the metrics alongside the picks. ATR and

@@ -47,7 +47,13 @@ which target unit the market actually reaches.
 
 ```powershell
 .\run-backtest.ps1 -Compare -RequestToken <fresh token>
+.\run-backtest.ps1 -Compare -Days 365 -RequestToken <fresh token>   # a year
 ```
+
+`-Days` sets the history window for that run only. Kite caps how much history
+one request may cover (about 180 days of 15m bars, 90 of 5m), so longer windows
+are fetched in several requests per symbol and stitched. Backtests only ever
+include sessions that have closed: a run during market hours ignores today.
 
 Research only. None of these strategies is part of the paper-trading freeze.
 

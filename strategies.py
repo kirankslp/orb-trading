@@ -227,7 +227,7 @@ def trade_day(strategy, day, hist, symbol=None, budget=None, turnover_cr=None,
 
         # --- in a trade: square-off, a signalled exit, then stop and target ---
         if t >= ob.SQUAREOFF_TIME:
-            return _close(day, side, entry, c, entry_time, t, "squareoff", False,
+            return _close(day, side, entry, o, entry_time, t, "squareoff", False,
                           symbol, qty, turnover_cr, sl_pct)
         if pending_exit:
             return _close(day, side, entry, o, entry_time, t, "signal", False,
