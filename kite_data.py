@@ -17,6 +17,41 @@ import pandas as pd
 IST = "Asia/Kolkata"
 REQUEST_PAUSE_SECONDS = 0.35  # stay below Kite's historical-data request rate
 
+# Kite caps the span one historical_data request may cover, by interval. A
+# request over the cap is rejected outright, so anything longer is split into
+# consecutive windows. Conservative on purpose (the documented limits are
+# somewhat higher); the cost of a smaller window is one extra request.
+MAX_DAYS_PER_CALL = {
+    "minute": 60, "3minute": 90, "5minute": 90, "10minute": 90,
+    "15minute": 180, "30minute": 180, "60minute": 365, "day": 2000,
+}
+
+
+def request_windows(start, end, max_days):
+    """Split [start, end] into consecutive inclusive windows of <= max_days.
+
+    Windows touch but do not overlap: each starts one step after the last ended
+    (a day for dates, a minute for datetimes). Kite treats both bounds as
+    inclusive, so overlapping windows would return the boundary candle twice.
+
+    The input type is preserved, and a span that fits in one window comes back
+    as the original (start, end) untouched, so short requests reach Kite
+    exactly as they did before chunking existed.
+    """
+    is_date = (isinstance(start, dt.date) and not isinstance(start, dt.datetime)
+               and isinstance(end, dt.date) and not isinstance(end, dt.datetime))
+    if is_date:
+        span, step = dt.timedelta(days=max_days - 1), dt.timedelta(days=1)
+    else:
+        start, end = pd.Timestamp(start).to_pydatetime(), pd.Timestamp(end).to_pydatetime()
+        span, step = dt.timedelta(days=max_days) - dt.timedelta(minutes=1), dt.timedelta(minutes=1)
+    out, s = [], start
+    while s <= end:
+        stop = min(s + span, end)
+        out.append((s, stop))
+        s = stop + step
+    return out
+
 
 class KiteConfigurationError(RuntimeError):
     """Kite authentication has not been supplied for this run."""
@@ -197,15 +232,30 @@ class KiteMarketData:
         }
 
     def candles(self, symbol, interval, start, end):
-        """Return OHLCV candles between naive IST datetimes/dates, inclusive."""
+        """Return OHLCV candles between naive IST datetimes/dates, inclusive.
+
+        Spans longer than Kite allows for the interval are fetched in
+        consecutive windows and stitched, so callers can ask for a year of
+        15-minute bars without knowing the per-request cap.
+        """
         token = self.instrument_token(symbol)
-        self._wait_turn()
-        try:
-            candles = self.client.historical_data(
-                token, start, end, interval_for_kite(interval), continuous=False, oi=False)
-        except Exception as exc:  # SDK has several exception classes; retain its message.
-            raise KiteDataError(f"Kite historical data failed for {symbol}: {exc}") from exc
-        return _candle_frame(candles)
+        kite_interval = interval_for_kite(interval)
+        cap = MAX_DAYS_PER_CALL.get(kite_interval, 60)
+        candles = []
+        for lo, hi in request_windows(start, end, cap):
+            self._wait_turn()
+            try:
+                candles.extend(self.client.historical_data(
+                    token, lo, hi, kite_interval, continuous=False, oi=False) or [])
+            except Exception as exc:  # SDK has several exception classes; retain its message.
+                raise KiteDataError(f"Kite historical data failed for {symbol}: {exc}") from exc
+        frame = _candle_frame(candles)
+        if frame.empty:
+            return frame
+        # Belt and braces: windows do not overlap, but a candle must never be
+        # counted twice even if Kite's boundary handling differs from ours.
+        return (frame.drop_duplicates(subset="Datetime", keep="last")
+                     .sort_values("Datetime").reset_index(drop=True))
 
     def daily(self, symbol, trading_days):
         end = pd.Timestamp.now(tz=IST).date()

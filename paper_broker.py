@@ -55,6 +55,9 @@ FROZEN_PARAMS = (
     "SL_PCT", "TARGET_PCT", "INTERVAL", "ENTRY_BAR_POLICY",
     "BROKERAGE_PCT", "BROKERAGE_CAP", "STT_SELL_PCT", "EXCH_TXN_PCT",
     "SEBI_PCT", "STAMP_BUY_PCT", "GST_PCT", "SLIPPAGE_TIERS",
+    # Not a parameter: a stamp on the engine's logic. Parameters alone cannot
+    # catch a code change that alters fills, so this moves the hash for those.
+    "ENGINE_VERSION",
 )
 
 # Selection is as much a part of the strategy as the entry rule: the universe
@@ -247,7 +250,7 @@ def _replay(day, g, row, n_or, turnover_cr):
             continue
 
         if t >= ob.SQUAREOFF_TIME:
-            return _row(day, side, entry, c, entry_time, t, "squareoff", False,
+            return _row(day, side, entry, o, entry_time, t, "squareoff", False,
                         row["symbol"], qty, turnover_cr, sl_pct, tgt_pct, planned_trigger)
         hit = ob._resolve_exit(side, sl, tgt, h, l)
         if hit:
