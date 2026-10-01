@@ -13,3 +13,4 @@ web/dist/
 kite_instruments.csv
 strategy_trades.csv
 backtests/
+spreads/

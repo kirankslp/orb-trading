@@ -57,6 +57,34 @@ include sessions that have closed: a run during market hours ignores today.
 
 Research only. None of these strategies is part of the paper-trading freeze.
 
+## Measuring real slippage
+
+A 179-session comparison left every strategy except Bollinger about Rs4-5 a
+trade short of break-even, and the largest cost line, slippage, is an
+assumption. `spread_probe.py` measures it from Kite's live order book without
+placing anything: for each of the day's picks it prices a slot-sized market
+order against the five-level book and records the cost per leg versus the mid.
+
+```powershell
+.\run-backtest.ps1 -Spreads -RequestToken <fresh token>   # after 09:15; runs to the close
+python spread_probe.py report --gap 5.1                    # measured vs modelled
+```
+
+The watchlist is ranked once a day and cached, so only the first snapshot pays
+for the daily fetch. Treat the result as a lower bound: breakout entries are
+stop orders that fire while price moves fast, when books thin, and scheduled
+snapshots mostly catch calmer moments.
+
+## P&L calendar
+
+The **P&L calendar** tab in the local app shows any trade log on disk (paper
+ledger, latest comparison or ORB backtest, or an archived run) as one square per
+session: blue for a profitable day, red for a loss, brighter for a larger day,
+an outline for break-even and a dashed square for a weekday with no trades.
+Hover for the day's numbers, click for its trades, or switch to a table. The
+colour scale is checked for colour-blind and normal-vision separation, and every
+value also carries its sign.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,

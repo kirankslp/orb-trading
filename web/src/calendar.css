@@ -1,0 +1,33 @@
+/* P&L calendar. Fills come from the validated diverging scale in Calendar.jsx;
+   this file only does layout, outlines and focus. 2px gaps keep adjacent fills
+   from merging into one block. */
+.workspace select{padding:10px 12px;border-radius:9px;border:1px solid #39537f;background:#08101f;color:#eaf0ff;font:inherit}
+.cal-months{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:22px;margin-top:16px}
+.cal-month header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px}
+.cal-month h4{margin:0;font-size:.95rem}
+.cal-month header span{color:#9aa9c5;font-size:.78rem;white-space:nowrap}
+.cal-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:2px}
+.cal-weekday{color:#9aa9c5;font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;text-align:center;padding-bottom:4px}
+.cal-pad{aspect-ratio:1.15}
+.cal-out{aspect-ratio:1.15;padding:4px 5px;font-size:.66rem;color:#3d4d6b}
+.cal-cell{aspect-ratio:1.15;border-radius:6px;padding:4px 5px;display:flex;flex-direction:column;justify-content:space-between;align-items:stretch;background:transparent;color:#eaf0ff;font-weight:700;text-align:left;border:1px solid transparent;min-width:0}
+.cal-cell:disabled{cursor:default;opacity:1}
+.cal-cell.empty{border:1px dashed #2f4469;color:#5d6f92}
+.cal-cell.flat{border:1px solid #9aa9c5}
+.cal-cell:not(:disabled):hover{box-shadow:0 0 0 2px #eaf0ff inset}
+.cal-cell:focus-visible{outline:2px solid #eaf0ff;outline-offset:1px}
+.cal-cell.selected{box-shadow:0 0 0 2px #eaf0ff,0 0 0 4px #0e192d inset}
+.cal-dom{font-size:.66rem;font-weight:600;opacity:.85}
+.cal-val{font-size:.8rem;text-align:right;white-space:nowrap;overflow:hidden}
+.cal-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.cal-legend small{flex-basis:100%;margin-top:6px}
+.cal-legend-label{color:#9aa9c5;font-size:.8rem;margin:0 6px}
+.cal-swatch{width:22px;height:16px;border-radius:4px;display:inline-block}
+.cal-swatch.flat{border:1px solid #9aa9c5}
+.cal-swatch.empty{border:1px dashed #2f4469;margin-left:14px}
+.cal-readout{margin:14px 0 0;min-height:1.4em;font-size:.88rem}
+.cal-readout b{margin-right:8px}
+.cal-detail{margin-top:0}
+.cal-row{cursor:pointer}
+.cal-row:hover td{background:#14223d}
+@media(max-width:760px){.cal-months{grid-template-columns:1fr}.cal-val{font-size:.72rem}}

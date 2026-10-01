@@ -178,10 +178,19 @@ class TestReportStats(unittest.TestCase):
     def test_wilson_handles_zero_n(self):
         self.assertEqual(pr._wilson(0, 0), (0.0, 0.0))
 
-    def test_pnl_ci_needs_two_trades(self):
-        self.assertEqual(pr._pnl_ci(pd.Series([5.0])), (None, None))
-        lo, hi = pr._pnl_ci(pd.Series([5.0, -3.0, 2.0]))
+    def test_pnl_ci_needs_two_sessions(self):
+        one_day = pd.DataFrame(dict(plan_date=["d1", "d1"], pnl=[5.0, -3.0]))
+        self.assertEqual(pr._pnl_ci(one_day), (None, None))
+        lo, hi = pr._pnl_ci(pd.DataFrame(dict(plan_date=["d1", "d2", "d3"],
+                                              pnl=[5.0, -3.0, 2.0])))
         self.assertLess(lo, hi)
+
+    def test_pnl_ci_counts_untriggered_plans_as_zero_days(self):
+        led = pd.DataFrame(dict(plan_date=["d1", "d2"], pnl=[100.0, 100.0]))
+        lo2, hi2 = pr._pnl_ci(led)
+        lo3, hi3 = pr._pnl_ci(led, sessions=["d1", "d2", "d3"])
+        self.assertGreater(hi3 - lo3, hi2 - lo2,
+                           "a flat day is a real outcome and adds spread")
 
     def test_breakeven_from_realised(self):
         led = pd.DataFrame(dict(pnl=[100.0, 100.0, -50.0, -50.0]))

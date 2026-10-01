@@ -35,6 +35,7 @@ import pandas as pd
 
 import orb_backtest as ob
 import strategies as st
+from stats import session_total_ci
 from kite_data import KiteMarketData
 
 ALL = ("orb45", "orb15", "vwap", "bollinger", "ema")
@@ -116,19 +117,24 @@ def excursions(trades, intraday, metrics, n_or):
 # statistics
 # --------------------------------------------------------------------------
 
-def summarise(tr):
+def summarise(tr, sessions=None):
+    """Headline numbers for one strategy. Intervals are session-clustered (see
+    stats.py): positions on the same day are not independent draws."""
     n = len(tr)
     wins, losses = tr[tr.pnl > 0], tr[tr.pnl <= 0]
     net, gross, cost = tr.pnl.sum(), tr.gross.sum(), tr.cost.sum()
-    sd = tr.pnl.std(ddof=1) if n > 1 else float("nan")
-    half = 1.96 * sd * math.sqrt(n) if n > 1 else float("nan")
+    lo, hi = session_total_ci(tr, "pnl", sessions=sessions)
+    glo, ghi = session_total_ci(tr, "gross", sessions=sessions)
+    nan = float("nan")
     aw = wins.pnl.mean() if len(wins) else 0.0
     al = -losses.pnl.mean() if len(losses) else 0.0
     return dict(
         trades=n, win=len(wins) / n * 100 if n else 0.0, gross=gross, cost=cost,
         net=net, per_trade=net / n if n else 0.0,
         cost_share=cost / abs(gross) * 100 if gross else float("inf"),
-        rr=aw / al if al else float("nan"), lo=net - half, hi=net + half,
+        rr=aw / al if al else float("nan"),
+        lo=nan if lo is None else lo, hi=nan if hi is None else hi,
+        glo=nan if glo is None else glo, ghi=nan if ghi is None else ghi,
         exits=tr.reason.value_counts(normalize=True).mul(100).round(1).to_dict())
 
 
@@ -156,14 +162,14 @@ def print_report(results, sessions, reach):
           f"{ob.MAX_POSITIONS} slots | identical picks, days and costs")
     print("=" * 94)
     hdr = (f"{'strategy':<10} {'trades':>6} {'win%':>6} {'gross':>9} {'costs':>9} "
-           f"{'net':>9} {'net/tr':>7} {'cost/gr':>8} {'RR':>5}  95% CI on net")
+           f"{'net':>9} {'net/tr':>7} {'cost/gr':>8} {'RR':>5}  95% CI on net (by session)")
     print(hdr)
     print("-" * len(hdr))
     for name, tr in results.items():
         if tr.empty:
             print(f"{name:<10} {'no trades':>6}")
             continue
-        s = summarise(tr)
+        s = summarise(tr, sessions)
         cs = f"{s['cost_share']:.0f}%" if np.isfinite(s["cost_share"]) else "n/a"
         print(f"{name:<10} {s['trades']:>6} {s['win']:>5.1f}% {s['gross']:>9,.0f} "
               f"{s['cost']:>9,.0f} {s['net']:>9,.0f} {s['per_trade']:>7.1f} {cs:>8} "
@@ -171,10 +177,23 @@ def print_report(results, sessions, reach):
               + ("   ~0" if s["lo"] <= 0 <= s["hi"] else ""))
     print("  ~0 marks a net P&L statistically indistinguishable from zero.")
 
+    # Gross is the edge the rule itself produces; costs are known in advance.
+    # Whether gross is reliably above zero is the question that decides whether
+    # cheaper execution could ever make a strategy pay.
+    print("\nGross edge before costs, 95% CI by session")
+    for name, tr in results.items():
+        if tr.empty:
+            continue
+        s = summarise(tr, sessions)
+        verdict = ("not distinguishable from zero" if s["glo"] <= 0 <= s["ghi"] else
+                   "reliably POSITIVE" if s["glo"] > 0 else "reliably NEGATIVE")
+        print(f"  {name:<10} Rs{s['gross']:>9,.0f}   {s['glo']:>9,.0f} .. {s['ghi']:>9,.0f}   "
+              f"Rs{s['gross'] / s['trades']:>5.1f}/trade vs Rs{s['cost'] / s['trades']:.1f} cost   {verdict}")
+
     print("\nExit mix (% of trades)")
     for name, tr in results.items():
         if not tr.empty:
-            ex = summarise(tr)["exits"]
+            ex = summarise(tr, sessions)["exits"]
             print(f"  {name:<10} " + "  ".join(f"{k} {v:.0f}%" for k, v in sorted(ex.items())))
 
     base = results.get("orb45")
