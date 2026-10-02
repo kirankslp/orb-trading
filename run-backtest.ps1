@@ -61,6 +61,12 @@
     and caches it in cache\daily; later runs take seconds.
 
 .EXAMPLE
+    .\run-backtest.ps1 -ExitSweep -Days 265 -RequestToken abc123
+    Re-runs orb45 and orb15 on the same picks, days and costs with other
+    stop and target widths (exit_sweep.py), judged out of sample. Use the
+    same -Days as the comparison so its current row can be checked against it.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -77,6 +83,7 @@ param(
     [switch]$Regime,
     [switch]$Futures,
     [switch]$Momentum,
+    [switch]$ExitSweep,
     [double]$Years = 0,
     [string]$LogId,
     [string]$Strategy = 'orb45',
@@ -266,6 +273,9 @@ if ($Compare) {
     $pyScript = 'futures_reprice.py'
     $pyArgs = @('--strategy', $Strategy)
     if ($LogId) { $pyArgs += @('--log', $LogId) }
+    $tradeLog = $null
+} elseif ($ExitSweep) {
+    $pyScript = 'exit_sweep.py'
     $tradeLog = $null
 } elseif ($Momentum) {
     $pyScript = 'momentum_backtest.py'

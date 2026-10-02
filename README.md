@@ -209,6 +209,23 @@ On random data a lever passes about 1% of the time. With 35 lever and strategy
 pairs, expect one or two passes by luck. Anything that passes goes to paper
 trading before it touches the config.
 
+### Exit sweep
+
+```powershell
+.\run-backtest.ps1 -ExitSweep -Days 265 -RequestToken <fresh request_token>
+```
+
+`exit_sweep.py` re-runs orb45 and orb15 on the same picks, days and costs with
+other exits, fixed in advance:
+
+- stop at 0.5x (current), 0.75x or 1.0x ATR, or no stop
+- target at 1.0x ATR (current), or no target
+
+It judges them the same way as the levers above. A variant must beat the
+current exits in the first two thirds of the sessions and clearly beat them in
+the last third. The current row reproduces the strategy comparison; check that
+its net matches before reading the rest.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
