@@ -27,7 +27,8 @@
 .cal-swatch.empty{border:1px dashed #2f4469;margin-left:14px}
 .cal-readout{margin:14px 0 0;min-height:1.4em;font-size:.88rem}
 .cal-readout b{margin-right:8px}
-.cal-detail{margin-top:0}
+.cal-detail{margin-top:0;scroll-margin-top:12px}
+.cal-detail-sub{margin:-4px 0 10px;color:#9aa9c5;font-size:.9rem}
 .cal-row{cursor:pointer}
 .cal-row:hover td{background:#14223d}
 @media(max-width:760px){.cal-months{grid-template-columns:1fr}.cal-val{font-size:.72rem}}

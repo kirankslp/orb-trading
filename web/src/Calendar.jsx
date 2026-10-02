@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './calendar.css'
 
 // Diverging scale: green = profit, red = loss, four steps per arm by size.
@@ -107,13 +107,23 @@ function Legend({ edges }) {
   </div>
 }
 
+// Most profitable first, the worst loss last. Ties keep the log's order.
+const byProfit = trades => [...(trades || [])].sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0))
+
 function DayTrades({ date, trades }) {
+  const ref = useRef(null)
+  // The table sits below every month; bring it into view when a day is picked.
+  useEffect(() => { ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, [date])
   if (!trades?.length) return null
-  return <div className="panel scroll cal-detail">
+  const rows = byProfit(trades)
+  const net = rows.reduce((s, t) => s + (t.pnl ?? 0), 0)
+  const wins = rows.filter(t => (t.pnl ?? 0) > 0).length
+  return <div className="panel scroll cal-detail" ref={ref}>
     <h3>Trades on {date}</h3>
-    <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>In</th><th>Out</th><th>Exit reason</th><th>Gross</th><th>Costs</th><th>Net</th></tr></thead>
-      <tbody>{trades.map((t, i) => <tr key={i}>
-        <td>{t.symbol}</td><td>{t.side}</td><td>{t.qty}</td><td>{t.entry}</td><td>{t.exit}</td>
+    <p className="cal-detail-sub">{rows.length} trades · {wins} winners · {rupees(net)} net · sorted most profitable first</p>
+    <table><thead><tr><th>#</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>In</th><th>Out</th><th>Exit reason</th><th>Gross</th><th>Costs</th><th>Net</th></tr></thead>
+      <tbody>{rows.map((t, i) => <tr key={i}>
+        <td>{i + 1}</td><td>{t.symbol}</td><td>{t.side}</td><td>{t.qty}</td><td>{t.entry}</td><td>{t.exit}</td>
         <td>{t.entry_time}</td><td>{t.exit_time}</td><td>{t.reason}</td>
         <td>{rupees(t.gross ?? 0)}</td><td>₹{(t.cost ?? 0).toFixed(1)}</td>
         <td><b>{rupees(t.pnl ?? 0)}</b></td>
