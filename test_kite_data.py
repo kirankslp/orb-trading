@@ -4,7 +4,8 @@ import unittest
 
 import pandas as pd
 
-from kite_data import KiteMarketData, interval_for_kite, kite_symbol
+import kite_data
+from kite_data import KiteDataError, KiteMarketData, interval_for_kite, kite_symbol
 import symbol_screener as sc
 
 
@@ -70,6 +71,79 @@ class KiteDataTests(unittest.TestCase):
         prices = self.data.latest_prices(["RELIANCE.NS", "RELIANCE"])
         self.assertEqual(prices, {"RELIANCE": 1412.35})
         self.assertEqual(self.data.instrument_info("RELIANCE")["tick_size"], 0.05)
+
+
+# Stand-ins named like the SDK's classes: retry is decided by class name.
+class NetworkException(Exception):
+    pass
+
+
+class TokenException(Exception):
+    pass
+
+
+class FlakyKite(FakeKite):
+    """Fails the first `fails` historical requests with `error`, then answers."""
+
+    def __init__(self, fails, error=NetworkException):
+        super().__init__()
+        self.fails, self.error = fails, error
+
+    def historical_data(self, token, start, end, interval, **kwargs):
+        if self.fails > 0:
+            self.fails -= 1
+            self.calls.append(("failed",))
+            raise self.error("Request failed (kt-common).")
+        return super().historical_data(token, start, end, interval, **kwargs)
+
+
+class RetryTests(unittest.TestCase):
+    def market(self, client):
+        data = KiteMarketData(client=client, request_pause=0)
+        self.slept = []
+        data._sleep = self.slept.append
+        return data
+
+    def historical_calls(self, client):
+        return [c for c in client.calls if c[0] in ("failed", "historical")]
+
+    def test_transient_failure_is_retried_and_succeeds(self):
+        client = FlakyKite(fails=2)
+        frame = self.market(client).intraday("RELIANCE.NS", "15m", 5)
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(len(self.historical_calls(client)), 3)
+        self.assertEqual(self.slept, list(kite_data.RETRY_DELAYS[:2]))
+
+    def test_gives_up_after_the_schedule_and_says_so(self):
+        n = len(kite_data.RETRY_DELAYS)
+        client = FlakyKite(fails=n + 1)
+        with self.assertRaises(KiteDataError) as ctx:
+            self.market(client).intraday("RELIANCE.NS", "15m", 5)
+        self.assertIn(f"after {n + 1} attempts", str(ctx.exception))
+        self.assertIn("kt-common", str(ctx.exception))
+        self.assertEqual(len(self.historical_calls(client)), n + 1)
+
+    def test_expired_token_is_not_retried(self):
+        """Resending cannot fix a dead session; it would only delay the error."""
+        client = FlakyKite(fails=1, error=TokenException)
+        with self.assertRaises(KiteDataError) as ctx:
+            self.market(client).intraday("RELIANCE.NS", "15m", 5)
+        self.assertNotIn("attempts", str(ctx.exception))
+        self.assertEqual(self.slept, [])
+        self.assertEqual(len(self.historical_calls(client)), 1)
+
+    def test_classification(self):
+        class ReadTimeout(OSError):
+            pass
+
+        class Sub(NetworkException):
+            pass
+
+        self.assertTrue(kite_data.is_transient(NetworkException()))
+        self.assertTrue(kite_data.is_transient(Sub()), "subclasses count")
+        self.assertTrue(kite_data.is_transient(ReadTimeout()))
+        self.assertFalse(kite_data.is_transient(TokenException()))
+        self.assertFalse(kite_data.is_transient(ValueError()))
 
 
 if __name__ == "__main__":

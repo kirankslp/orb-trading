@@ -86,7 +86,7 @@ snapshots mostly catch calmer moments.
 
 The **P&L calendar** tab in the local app shows any trade log on disk (paper
 ledger, latest comparison or ORB backtest, or an archived run) as one square per
-session: blue for a profitable day, red for a loss, brighter for a larger day,
+session: green for a profitable day, red for a loss, brighter for a larger day,
 an outline for break-even and a dashed square for a weekday with no trades.
 Hover for the day's numbers, click for its trades, or switch to a table. The
 colour scale is checked for colour-blind and normal-vision separation, and every
