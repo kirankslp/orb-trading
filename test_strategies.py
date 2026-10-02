@@ -293,14 +293,22 @@ class TestEndToEnd(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as out:
                 results, reach = sb.run(sb.ALL, market_data=FakeMD())
             text = out.getvalue()
-            self.assertEqual(list(results), list(sb.ALL))
+            self.assertEqual(list(results), list(sb.ORDER),
+                             "each ORB is followed by its in-play (high RVOL) subset")
+            for base in ("orb45", "orb15"):
+                hot = results[f"{base}_rvol"]
+                self.assertTrue(set(zip(hot.date, hot.symbol))
+                                <= set(zip(results[base].date, results[base].symbol)),
+                                "the in-play rows are a subset of the base trades")
+                self.assertTrue((hot.rvol >= 2.0).all())
+            self.assertIn("Relative opening volume", text)
             self.assertTrue(any(not tr.empty for tr in results.values()))
             self.assertIn("STRATEGY COMPARISON", text)
             self.assertIn("Paired against orb45", text)
             self.assertIn("orb45", reach)
             self.assertTrue(os.path.exists("strategy_trades.csv"))
             log = pd.read_csv("strategy_trades.csv")
-            self.assertTrue(set(log.strategy) <= set(sb.ALL))
+            self.assertTrue(set(log.strategy) <= set(sb.ORDER))
             # identical picks: no strategy may trade a symbol the screener
             # did not hand it
             self.assertTrue(set(log.symbol) <= set(FakeMD.SYMS))
