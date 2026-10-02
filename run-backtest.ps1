@@ -53,6 +53,14 @@
     -LogId and -Strategy like -Regime.
 
 .EXAMPLE
+    .\run-backtest.ps1 -Momentum -RequestToken abc123
+    Long-term, not intraday: 12-1 month momentum, top 20, rebalanced monthly
+    with delivery costs, against Nifty 50 and an equal-weight universe
+    (momentum_backtest.py). -Years sets the test length (default 8). The
+    first run fetches daily history for every symbol (roughly half an hour)
+    and caches it in cache\daily; later runs take seconds.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -68,6 +76,8 @@ param(
     [switch]$Spreads,
     [switch]$Regime,
     [switch]$Futures,
+    [switch]$Momentum,
+    [double]$Years = 0,
     [string]$LogId,
     [string]$Strategy = 'orb45',
     [int]$Every = 15,
@@ -232,7 +242,7 @@ $ErrorActionPreference = $prevEAP
 Write-Host ''
 # The regime and futures reports read an existing log; budget, bars and
 # universe do not apply.
-if (-not ($Regime -or $Futures)) { Write-Host "Config: $cfg" }
+if (-not ($Regime -or $Futures -or $Momentum)) { Write-Host "Config: $cfg" }
 Write-Host "Transcript: $log"
 Write-Host ''
 
@@ -257,6 +267,12 @@ if ($Compare) {
     $pyArgs = @('--strategy', $Strategy)
     if ($LogId) { $pyArgs += @('--log', $LogId) }
     $tradeLog = $null
+} elseif ($Momentum) {
+    $pyScript = 'momentum_backtest.py'
+    $pyArgs = @()
+    if ($Years -gt 0) { $pyArgs += @('--years', "$Years") }
+    # Not "_trades_": the P&L calendar lists *_trades_* archives as day logs.
+    $tradeLog = 'momentum_orders'
 } elseif ($Spreads) {
     # Long-running: snapshots until 15:30, appending to spreads\spreads.csv.
     $pyScript = 'spread_probe.py'

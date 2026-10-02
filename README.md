@@ -147,6 +147,40 @@ Assumptions:
 - Slippage is the trade's cash tier.
 - Margin is taken as 20% of contract value.
 
+## Long-term momentum backtest
+
+Holding for months instead of minutes: costs become a small share of the move.
+
+```powershell
+.\run-backtest.ps1 -Momentum -RequestToken <fresh request_token>
+.\run-backtest.ps1 -Momentum -Years 10 -RequestToken <fresh request_token>
+```
+
+`momentum_backtest.py` applies rules stated before any run:
+
+- **Ranking:** every month-end, rank eligible stocks by their return from 12
+  months ago to 1 month ago.
+- **Eligible:** at least a year of history, price of ₹50 or more, and median
+  daily turnover of ₹10 cr or more, all measured with past data only.
+- **Portfolio:** hold the top 20 and trade at the next session's open. Sell the
+  stocks that left the list and buy the new ones with an equal share each.
+  Holdings that stay on the list are left alone. Whole shares only.
+- **Costs:** full delivery costs (0.1% STT on both sides, stamp duty, exchange
+  charges, GST, a DP charge per stock sold) plus 0.1% slippage per side.
+
+It compares the portfolio with **Nifty 50** buy-and-hold and with an
+**equal-weight portfolio of the same eligible stocks**. The stock list
+contains only companies listed today, so delisted failures are missing
+(survivorship bias). That flatters the portfolio and the equal-weight
+benchmark alike, so the gap between them is the fairer measure.
+
+The one verdict is the mean monthly excess return with a 95% interval. The
+report also shows yearly returns, the worst fall, costs per year and a
+simplified tax view.
+
+The first run fetches daily history for every symbol (roughly half an hour)
+and caches it in `cache/daily`. Later runs take seconds; `--refresh` refetches.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
