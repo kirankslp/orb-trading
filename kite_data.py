@@ -17,6 +17,21 @@ import pandas as pd
 IST = "Asia/Kolkata"
 REQUEST_PAUSE_SECONDS = 0.35  # stay below Kite's historical-data request rate
 
+# Kite's gateway drops the odd request ("Request failed (kt-common)", HTTP 429
+# or 5xx), and a long backtest makes hundreds of them. Those are retried after
+# these pauses; anything else (an expired token, a bad argument) fails at once.
+RETRY_DELAYS = (2, 4, 8, 16)
+# Matched by class name, so the SDK is not needed to classify an error. Kite's
+# NetworkException covers 429 and gateway failures, DataException a garbled
+# response; the rest are the transport errors underneath the SDK.
+TRANSIENT_ERRORS = {"NetworkException", "DataException", "ConnectionError",
+                    "Timeout", "ReadTimeout", "ConnectTimeout", "ChunkedEncodingError"}
+
+
+def is_transient(exc):
+    """True for failures worth retrying: the request may succeed if resent."""
+    return any(c.__name__ in TRANSIENT_ERRORS for c in type(exc).__mro__)
+
 # Kite caps the span one historical_data request may cover, by interval. A
 # request over the cap is rejected outright, so anything longer is split into
 # consecutive windows. Conservative on purpose (the documented limits are
@@ -177,6 +192,7 @@ class KiteMarketData:
         self._tokens = None
         self._instrument_details = None
         self._last_request = 0.0
+        self._sleep = time.sleep
 
     def _wait_turn(self):
         remaining = self.request_pause - (time.monotonic() - self._last_request)
@@ -269,12 +285,7 @@ class KiteMarketData:
         cap = MAX_DAYS_PER_CALL.get(kite_interval, 60)
         candles = []
         for lo, hi in request_windows(start, end, cap):
-            self._wait_turn()
-            try:
-                candles.extend(self.client.historical_data(
-                    token, lo, hi, kite_interval, continuous=False, oi=False) or [])
-            except Exception as exc:  # SDK has several exception classes; retain its message.
-                raise KiteDataError(f"Kite historical data failed for {symbol}: {exc}") from exc
+            candles.extend(self._historical(symbol, token, lo, hi, kite_interval))
         frame = _candle_frame(candles)
         if frame.empty:
             return frame
@@ -282,6 +293,21 @@ class KiteMarketData:
         # counted twice even if Kite's boundary handling differs from ours.
         return (frame.drop_duplicates(subset="Datetime", keep="last")
                      .sort_values("Datetime").reset_index(drop=True))
+
+    def _historical(self, symbol, token, lo, hi, kite_interval):
+        """One historical_data request, resent after a transient failure."""
+        for attempt in range(len(RETRY_DELAYS) + 1):
+            self._wait_turn()
+            try:
+                return self.client.historical_data(
+                    token, lo, hi, kite_interval, continuous=False, oi=False) or []
+            except Exception as exc:  # SDK has several exception classes; retain its message.
+                if attempt < len(RETRY_DELAYS) and is_transient(exc):
+                    self._sleep(RETRY_DELAYS[attempt])
+                    continue
+                tries = f" after {attempt + 1} attempts" if attempt else ""
+                raise KiteDataError(
+                    f"Kite historical data failed for {symbol}{tries}: {exc}") from exc
 
     def daily(self, symbol, trading_days):
         end = pd.Timestamp.now(tz=IST).date()
