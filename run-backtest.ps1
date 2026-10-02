@@ -222,7 +222,8 @@ print(f'Rs{ob.DAY_BUDGET:,} over {ob.MAX_POSITIONS} slots = Rs{ob.slot_budget():
 "@ 2>&1
 $ErrorActionPreference = $prevEAP
 Write-Host ''
-Write-Host "Config: $cfg"
+# The regime report reads an existing log; budget, bars and universe do not apply.
+if (-not $Regime) { Write-Host "Config: $cfg" }
 Write-Host "Transcript: $log"
 Write-Host ''
 
