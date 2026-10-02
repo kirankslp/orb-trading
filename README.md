@@ -181,6 +181,34 @@ simplified tax view.
 The first run fetches daily history for every symbol (roughly half an hour)
 and caches it in `cache/daily`. Later runs take seconds; `--refresh` refetches.
 
+## Trade diagnostics and tuning
+
+Where do the intraday strategies make and lose money, and does any simple
+tuning survive out of sample? It runs offline on the latest comparison log,
+with no Kite token:
+
+```powershell
+.\.unified-venv\Scripts\python.exe trade_diagnostics.py
+.\.unified-venv\Scripts\python.exe trade_diagnostics.py --strategy ema
+```
+
+`trade_diagnostics.py` reports three things:
+
+1. **Per strategy:** the exit mix and the share of trades whose whole move was
+   smaller than their costs.
+2. **For one strategy:** results by exit reason, side, entry time, time held,
+   stop distance, liquidity tier, slot use and weekday. This is description
+   only.
+3. **Seven tuning levers, fixed in advance and tested out of sample.** The
+   sessions are split in time. A lever must pick better trades in the first
+   two thirds and clearly better trades (95% interval, one draw per session)
+   in the last third. It counts as a fix only if the trades it keeps are also
+   profitable there.
+
+On random data a lever passes about 1% of the time. With 35 lever and strategy
+pairs, expect one or two passes by luck. Anything that passes goes to paper
+trading before it touches the config.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
