@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import './calendar.css'
 
-// Diverging scale: blue = profit, red = loss, four steps per arm by size.
-// Validated with the dataviz palette checker against the panel surface
-// (#0e192d): each arm is monotone with visible step gaps and its faintest step
-// clears 2:1; the poles and faintest steps clear the colour-blind and normal-
-// vision floors. Zero gets NO fill: a muted gray sits too close to the faint
-// red to be told apart, so break-even is an outline instead.
-const PROFIT = ['#234e86', '#2a5fa3', '#3172c2', '#3987e5']
+// Diverging scale: green = profit, red = loss, four steps per arm by size.
+// Checked with the dataviz palette validator against the panel surface
+// (#0e192d): each arm is monotone with visible step gaps, and its faintest step
+// clears 2:1 (green 3.6, red 2.1). Same-size red and green would look alike to
+// red-green colour-blind readers, so the green arm sits one lightness notch
+// above the red: each profit step clears the CVD target (dE >= 8) against the
+// loss step of the same size. The green is held to moderate chroma so a small
+// profit does not shout louder than a small loss. Across sizes some pairs still
+// collide under deuteranopia (a large profit against the largest loss), which
+// is why every cell also prints its signed value: colour never carries profit
+// or loss alone. Zero gets NO fill; break-even is an outline.
+const PROFIT = ['#358122', '#4c983a', '#60ac4f', '#7dcb6c']
 const LOSS = ['#763e49', '#984b52', '#b7565a', '#e66767']
 // Ink per step, picked for >= 4.5:1 against that step's fill.
-const INK = ['#ffffff', '#ffffff', '#ffffff', '#08101f']
+const PROFIT_INK = ['#ffffff', '#08101f', '#08101f', '#08101f']
+const LOSS_INK = ['#ffffff', '#ffffff', '#ffffff', '#08101f']
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 
 const rupees = v => `${v < 0 ? '−' : v > 0 ? '+' : ''}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
@@ -33,7 +39,9 @@ function binner(days) {
 function cellStyle(day, step) {
   if (!day || Math.abs(day.pnl) < 0.5) return undefined
   const s = step(day.pnl)
-  return { background: (day.pnl > 0 ? PROFIT : LOSS)[s], color: INK[s] }
+  return day.pnl > 0
+    ? { background: PROFIT[s], color: PROFIT_INK[s] }
+    : { background: LOSS[s], color: LOSS_INK[s] }
 }
 
 function monthsOf(days) {
