@@ -92,6 +92,32 @@ Hover for the day's numbers, click for its trades, or switch to a table. The
 colour scale is checked for colour-blind and normal-vision separation, and every
 value also carries its sign.
 
+## Market regime report
+
+Did the strategies do better or worse in particular market conditions?
+
+```powershell
+.\run-backtest.ps1 -Regime -RequestToken <fresh request_token>
+.\run-backtest.ps1 -Regime -LogId archive:strategy_trades_<stamp>.csv -Strategy ema
+```
+
+`regime_report.py` reads an existing trade log (no re-run) and fetches only
+Nifty 50 and India VIX daily candles. It reports:
+
+1. **One pre-stated test, with a verdict:** are sessions that open after India
+   VIX closed at 15 or higher better than the rest, per strategy? The previous
+   close is known before the open, so a yes could become a real filter. It also
+   says how many separate stretches the high-VIX sessions fall in: one stretch
+   is one market episode, not a pattern.
+2. Previous-day VIX buckets, Nifty day type (up, sideways, down) and Nifty day
+   range, for one strategy. Day type and range are known only after the close,
+   so they describe and cannot filter.
+3. A month table with Nifty's move and the average VIX.
+
+Every group carries a 95% interval with sessions as the draws. Only the
+pre-stated test gets a verdict; the other tables are description, and a pattern
+in them is a lead to state in advance and check on new sessions, not a result.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
