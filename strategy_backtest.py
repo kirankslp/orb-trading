@@ -34,11 +34,16 @@ import numpy as np
 import pandas as pd
 
 import orb_backtest as ob
+import rvol
 import strategies as st
 from stats import session_total_ci
 from kite_data import KiteMarketData
 
 ALL = ("orb45", "orb15", "vwap", "bollinger", "ema")
+# Report order. The *_rvol rows are the same ORB trades restricted to stocks
+# opening at rvol.RVOL_MIN x their usual volume; they appear whenever their
+# base strategy runs, and are compared against orb45 like any other row.
+ORDER = ("orb45", "orb45_rvol", "orb15", "orb15_rvol", "vwap", "bollinger", "ema")
 ORB15_INTERVAL = "5m"
 ORB15_MINUTES = 15
 
@@ -107,7 +112,8 @@ def excursions(trades, intraday, metrics, n_or):
         else:
             mfe = max(0.0, (t.entry - after["Low"].min()) / t.entry)
         atr = (metrics.get((t.date, t.symbol)) or {}).get("atr_pct")
-        rows.append(dict(mfe_pct=mfe * 100, or_width_pct=or_w * 100,
+        rows.append(dict(date=t.date, symbol=t.symbol,
+                         mfe_pct=mfe * 100, or_width_pct=or_w * 100,
                          mfe_atr=mfe / (atr / 100) if atr else np.nan,
                          mfe_or=mfe / or_w if or_w > 0 else np.nan))
     return pd.DataFrame(rows)
@@ -227,6 +233,42 @@ def print_report(results, sessions, reach):
               "choosing the best row here is fitting\n  these sessions.")
 
 
+def print_rvol(results, reach):
+    """Does opening volume separate breakouts that follow through from those
+    that do not? Bucketed on the base ORB trades, so nothing is filtered yet."""
+    bases = [k for k in ("orb45", "orb15") if k in results and not results[k].empty]
+    if not bases:
+        return
+    print(f"\nRelative opening volume (stocks in play)")
+    print(f"  Pre-stated test: ORB trades at >= {rvol.RVOL_MIN:g}x usual opening volume earn "
+          f"more gross per trade than the rest.")
+    print(f"  Baseline: median of the previous {rvol.RVOL_LOOKBACK} sessions' opening "
+          f"volume; 'unknown' = fewer than {rvol.RVOL_MIN_HISTORY} prior sessions.")
+    for name in bases:
+        table = rvol.bucket_table(results[name], reach.get(name))
+        print(f"\n  {name:<9} {'rvol':<8} {'trades':>6} {'win%':>6} {'gross/tr':>9} "
+              f"{'net/tr':>7} {'target%':>8} {'stop%':>6} {'median move':>12}")
+        for r in table.itertuples():
+            move = f"{r.move:.2f}%" if np.isfinite(r.move) else "n/a"
+            print(f"  {'':<9} {r.bucket:<8} {r.trades:>6} {r.win:>5.1f}% {r.gross_tr:>9.1f} "
+                  f"{r.net_tr:>7.1f} {r.target:>7.1f}% {r.stop:>5.1f}% {move:>12}")
+        hot = results.get(f"{name}_rvol")
+        n_hot = 0 if hot is None else len(hot)
+        known = int(results[name]["rvol"].notna().sum())
+        if not known:
+            print(f"  {'':<9} No trade had enough history for a baseline.")
+        elif not n_hot:
+            print(f"  {'':<9} None of {known} trades with a baseline opened at "
+                  f">= {rvol.RVOL_MIN:g}x: the screener's picks were never in play, so there "
+                  f"is nothing to test.")
+        else:
+            print(f"  {'':<9} {n_hot} of {known} trades with a baseline were in play "
+                  f"({n_hot / known * 100:.0f}%). The {name}_rvol row in the paired "
+                  f"section above is the verdict.")
+    print("  Few in-play trades means a wide interval: a higher gross per trade here is a")
+    print("  lead to test on more sessions, not a result, unless the paired verdict says so.")
+
+
 # --------------------------------------------------------------------------
 
 def run(only=ALL, market_data=None):
@@ -241,7 +283,10 @@ def run(only=ALL, market_data=None):
         bars = ob.load_many(needed, market_data=market_data)
         if "orb45" in only:
             tr, _ = ob.backtest_watchlist(bars, picks, metrics)
-            results["orb45"] = tr
+            # Opening volume over the same 45 minutes that form the range, so
+            # it is known exactly when an entry first becomes possible.
+            tr = rvol.annotate(tr, rvol.opening_rvol(bars, ob.or_candles()))
+            results["orb45"], results["orb45_rvol"] = tr, rvol.in_play(tr)
             if not tr.empty:
                 reach["orb45"] = excursions(tr, bars, metrics, ob.or_candles())
         for name in ("vwap", "bollinger", "ema"):
@@ -254,12 +299,14 @@ def run(only=ALL, market_data=None):
         bars5 = load_interval(needed, ORB15_INTERVAL, market_data)
         n_or = ORB15_MINUTES // int(ORB15_INTERVAL.rstrip("m"))
         tr = orb_watchlist(bars5, picks, metrics, n_or)
-        results["orb15"] = tr
+        tr = rvol.annotate(tr, rvol.opening_rvol(bars5, n_or))
+        results["orb15"], results["orb15_rvol"] = tr, rvol.in_play(tr)
         if not tr.empty:
             reach["orb15"] = excursions(tr, bars5, metrics, n_or)
 
-    ordered = {k: results[k] for k in ALL if k in results}
+    ordered = {k: results[k] for k in ORDER if k in results}
     print_report(ordered, sessions, reach)
+    print_rvol(ordered, reach)
 
     frames = [tr.assign(strategy=k) for k, tr in ordered.items() if not tr.empty]
     if frames:

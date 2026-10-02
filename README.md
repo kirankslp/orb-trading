@@ -38,6 +38,13 @@ point-in-time screener picks, sessions and cost model, so only the rule differs:
 | `bollinger` | fade a close outside the 20/2 bands, exit at the middle band |
 | `ema` | 9/20 EMA crossover, exit on the opposite cross |
 
+Each ORB also gets an `_rvol` row: the same trades restricted to stocks whose
+opening-range volume was at least 2x the median of that window over their
+previous 20 sessions. Relative volume is a catalyst proxy that needs no news
+feed: it is known the moment the range closes and its baseline uses only
+earlier sessions. The 2x threshold was fixed before any run; the report's other
+volume buckets are descriptive, not a menu to pick from.
+
 Signals are read at a bar's close and filled at the next bar's open, and every
 strategy carries the ORB's ATR stop and 15:15 square-off. The report leads with
 a paired, session-by-session comparison against `orb45` and says when a
