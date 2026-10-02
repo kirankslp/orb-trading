@@ -118,6 +118,114 @@ Every group carries a 95% interval with sessions as the draws. Only the
 pre-stated test gets a verdict; the other tables are description, and a pattern
 in them is a lead to state in advance and check on new sessions, not a result.
 
+## Futures re-pricing
+
+Would the same trades have survived in stock futures?
+
+```powershell
+.\run-backtest.ps1 -Futures -RequestToken <fresh request_token>
+```
+
+`futures_reprice.py` takes an existing trade log and re-prices each trade in a
+stock that has futures as one lot of its nearest future, with the same entry and
+exit prices. Per strategy it shows three cost scenarios on identical trades:
+
+- **cash at lot size:** the shares at the same rupee size as a lot, so the
+  brokerage cap applies equally. This separates the effect of size from the
+  effect of the instrument.
+- **futures STT 0.02%** and **futures STT 0.05%:** the sell-side STT before and
+  after the 2026 Budget change. Check Zerodha's current charges.
+
+Each scenario shows net per trade, total net with a session-clustered 95%
+interval, and the per-leg slippage at which the strategy breaks even. A last
+section shows the margin a one-lot-per-trade version would have needed, its
+worst day and deepest drawdown.
+
+Assumptions:
+- A future moves rupee for rupee with the share intraday.
+- Lot sizes are today's.
+- Slippage is the trade's cash tier.
+- Margin is taken as 20% of contract value.
+
+## Long-term momentum backtest
+
+Holding for months instead of minutes: costs become a small share of the move.
+
+```powershell
+.\run-backtest.ps1 -Momentum -RequestToken <fresh request_token>
+.\run-backtest.ps1 -Momentum -Years 10 -RequestToken <fresh request_token>
+```
+
+`momentum_backtest.py` applies rules stated before any run:
+
+- **Ranking:** every month-end, rank eligible stocks by their return from 12
+  months ago to 1 month ago.
+- **Eligible:** at least a year of history, price of ₹50 or more, and median
+  daily turnover of ₹10 cr or more, all measured with past data only.
+- **Portfolio:** hold the top 20 and trade at the next session's open. Sell the
+  stocks that left the list and buy the new ones with an equal share each.
+  Holdings that stay on the list are left alone. Whole shares only.
+- **Costs:** full delivery costs (0.1% STT on both sides, stamp duty, exchange
+  charges, GST, a DP charge per stock sold) plus 0.1% slippage per side.
+
+It compares the portfolio with **Nifty 50** buy-and-hold and with an
+**equal-weight portfolio of the same eligible stocks**. The stock list
+contains only companies listed today, so delisted failures are missing
+(survivorship bias). That flatters the portfolio and the equal-weight
+benchmark alike, so the gap between them is the fairer measure.
+
+The one verdict is the mean monthly excess return with a 95% interval. The
+report also shows yearly returns, the worst fall, costs per year and a
+simplified tax view.
+
+The first run fetches daily history for every symbol (roughly half an hour)
+and caches it in `cache/daily`. Later runs take seconds; `--refresh` refetches.
+
+## Trade diagnostics and tuning
+
+Where do the intraday strategies make and lose money, and does any simple
+tuning survive out of sample? It runs offline on the latest comparison log,
+with no Kite token:
+
+```powershell
+.\.unified-venv\Scripts\python.exe trade_diagnostics.py
+.\.unified-venv\Scripts\python.exe trade_diagnostics.py --strategy ema
+```
+
+`trade_diagnostics.py` reports three things:
+
+1. **Per strategy:** the exit mix and the share of trades whose whole move was
+   smaller than their costs.
+2. **For one strategy:** results by exit reason, side, entry time, time held,
+   stop distance, liquidity tier, slot use and weekday. This is description
+   only.
+3. **Seven tuning levers, fixed in advance and tested out of sample.** The
+   sessions are split in time. A lever must pick better trades in the first
+   two thirds and clearly better trades (95% interval, one draw per session)
+   in the last third. It counts as a fix only if the trades it keeps are also
+   profitable there.
+
+On random data a lever passes about 1% of the time. With 35 lever and strategy
+pairs, expect one or two passes by luck. Anything that passes goes to paper
+trading before it touches the config.
+
+### Exit sweep
+
+```powershell
+.\run-backtest.ps1 -ExitSweep -Days 265 -RequestToken <fresh request_token>
+```
+
+`exit_sweep.py` re-runs orb45 and orb15 on the same picks, days and costs with
+other exits, fixed in advance:
+
+- stop at 0.5x (current), 0.75x or 1.0x ATR, or no stop
+- target at 1.0x ATR (current), or no target
+
+It judges them the same way as the levers above. A variant must beat the
+current exits in the first two thirds of the sessions and clearly beat them in
+the last third. The current row reproduces the strategy comparison; check that
+its net matches before reading the rest.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,

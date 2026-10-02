@@ -14,3 +14,6 @@ kite_instruments.csv
 strategy_trades.csv
 backtests/
 spreads/
+cache/
+momentum_orders.csv
+momentum_monthly.csv
