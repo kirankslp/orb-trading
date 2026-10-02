@@ -39,6 +39,13 @@
     Start it after 09:15. Read the result with: python spread_probe.py report
 
 .EXAMPLE
+    .\run-backtest.ps1 -Regime -RequestToken abc123
+    Not a backtest: splits the latest comparison's sessions by market regime
+    (previous-day India VIX, Nifty day type and range, month) with confidence
+    intervals (regime_report.py). Add -LogId archive:<file> for an archived run
+    and -Strategy ema to detail another strategy.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -52,6 +59,9 @@ param(
     [string]$UniverseFile,
     [switch]$Compare,
     [switch]$Spreads,
+    [switch]$Regime,
+    [string]$LogId,
+    [string]$Strategy = 'orb45',
     [int]$Every = 15,
     [int]$Days = 0,
     [string]$OutDir = "$PSScriptRoot\backtests"
@@ -225,6 +235,12 @@ $pyArgs = @()
 if ($Compare) {
     $pyScript = 'strategy_backtest.py'
     $tradeLog = 'strategy_trades'
+} elseif ($Regime) {
+    # Reads an existing trade log; fetches only Nifty 50 and India VIX dailies.
+    $pyScript = 'regime_report.py'
+    $pyArgs = @('--strategy', $Strategy)
+    if ($LogId) { $pyArgs += @('--log', $LogId) }
+    $tradeLog = $null
 } elseif ($Spreads) {
     # Long-running: snapshots until 15:30, appending to spreads\spreads.csv.
     $pyScript = 'spread_probe.py'
