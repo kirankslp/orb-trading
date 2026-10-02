@@ -247,6 +247,27 @@ class KiteMarketData:
             if f"NSE:{symbol}" in quotes and quotes[f"NSE:{symbol}"].get("last_price") is not None
         }
 
+    def futures_lots(self):
+        """Lot size of each stock's nearest-expiry future, keyed by underlying
+        (e.g. {"RELIANCE": 500}). Current lot sizes only: NSE revises them a
+        few times a year, so applying them to past trades is an approximation.
+        """
+        self._wait_turn()
+        try:
+            rows = self.client.instruments("NFO") or []
+        except Exception as exc:  # SDK has several exception classes; retain its message.
+            raise KiteDataError(f"Kite NFO instrument list failed: {exc}") from exc
+        nearest = {}
+        for row in rows:
+            if row.get("instrument_type") != "FUT" or not row.get("lot_size"):
+                continue
+            name, expiry = str(row.get("name") or "").upper(), row.get("expiry")
+            if not name or expiry is None:
+                continue
+            if name not in nearest or expiry < nearest[name][0]:
+                nearest[name] = (expiry, int(row["lot_size"]))
+        return {name: lot for name, (_, lot) in nearest.items()}
+
     def order_books(self, symbols, batch=200):
         """Live five-level market depth, keyed by plain trading symbol.
 

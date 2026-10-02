@@ -46,6 +46,13 @@
     and -Strategy ema to detail another strategy.
 
 .EXAMPLE
+    .\run-backtest.ps1 -Futures -RequestToken abc123
+    Not a backtest: re-prices the latest comparison's trades as one lot of
+    each stock's future (futures_reprice.py), against the same trades in
+    shares at the same size, with futures STT at 0.02% and 0.05%. Takes
+    -LogId and -Strategy like -Regime.
+
+.EXAMPLE
     .\run-backtest.ps1 -UniverseFile EQUITY_L.csv
     Runs against the full NSE equity list instead of the 30 hardcoded large
     caps. Much slower; see the warning the script prints.
@@ -60,6 +67,7 @@ param(
     [switch]$Compare,
     [switch]$Spreads,
     [switch]$Regime,
+    [switch]$Futures,
     [string]$LogId,
     [string]$Strategy = 'orb45',
     [int]$Every = 15,
@@ -222,8 +230,9 @@ print(f'Rs{ob.DAY_BUDGET:,} over {ob.MAX_POSITIONS} slots = Rs{ob.slot_budget():
 "@ 2>&1
 $ErrorActionPreference = $prevEAP
 Write-Host ''
-# The regime report reads an existing log; budget, bars and universe do not apply.
-if (-not $Regime) { Write-Host "Config: $cfg" }
+# The regime and futures reports read an existing log; budget, bars and
+# universe do not apply.
+if (-not ($Regime -or $Futures)) { Write-Host "Config: $cfg" }
 Write-Host "Transcript: $log"
 Write-Host ''
 
@@ -239,6 +248,12 @@ if ($Compare) {
 } elseif ($Regime) {
     # Reads an existing trade log; fetches only Nifty 50 and India VIX dailies.
     $pyScript = 'regime_report.py'
+    $pyArgs = @('--strategy', $Strategy)
+    if ($LogId) { $pyArgs += @('--log', $LogId) }
+    $tradeLog = $null
+} elseif ($Futures) {
+    # Reads an existing trade log; fetches only the NFO instrument list.
+    $pyScript = 'futures_reprice.py'
     $pyArgs = @('--strategy', $Strategy)
     if ($LogId) { $pyArgs += @('--log', $LogId) }
     $tradeLog = $null

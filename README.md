@@ -118,6 +118,35 @@ Every group carries a 95% interval with sessions as the draws. Only the
 pre-stated test gets a verdict; the other tables are description, and a pattern
 in them is a lead to state in advance and check on new sessions, not a result.
 
+## Futures re-pricing
+
+Would the same trades have survived in stock futures?
+
+```powershell
+.\run-backtest.ps1 -Futures -RequestToken <fresh request_token>
+```
+
+`futures_reprice.py` takes an existing trade log and re-prices each trade in a
+stock that has futures as one lot of its nearest future, with the same entry and
+exit prices. Per strategy it shows three cost scenarios on identical trades:
+
+- **cash at lot size:** the shares at the same rupee size as a lot, so the
+  brokerage cap applies equally. This separates the effect of size from the
+  effect of the instrument.
+- **futures STT 0.02%** and **futures STT 0.05%:** the sell-side STT before and
+  after the 2026 Budget change. Check Zerodha's current charges.
+
+Each scenario shows net per trade, total net with a session-clustered 95%
+interval, and the per-leg slippage at which the strategy breaks even. A last
+section shows the margin a one-lot-per-trade version would have needed, its
+worst day and deepest drawdown.
+
+Assumptions:
+- A future moves rupee for rupee with the share intraday.
+- Lot sizes are today's.
+- Slippage is the trade's cash tier.
+- Margin is taken as 20% of contract value.
+
 ## Paper trading
 
 A point-in-time forward test at Rs 1,00,000 across 10 slots of Rs 10,000,
